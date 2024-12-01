@@ -9,6 +9,7 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 import hashlib
 from datetime import datetime
 import win32com.client
+from PIL import ImageDraw, ImageFont
 
 class ImageProcessor:
     def __init__(self):
@@ -102,6 +103,17 @@ class ImageProcessor:
             )
         '''
         self.cursor.execute(sources_sql)
+        
+        # 添加索引以提高查询性能
+        index_sql = [
+            f"CREATE INDEX IF NOT EXISTS idx_{self.table_name}_hash ON {self.table_name}(img_hash)",
+            "CREATE INDEX IF NOT EXISTS idx_mapping_hash ON image_ppt_mapping(img_hash)",
+            "CREATE INDEX IF NOT EXISTS idx_mapping_path ON image_ppt_mapping(pptx_path)",
+            "CREATE INDEX IF NOT EXISTS idx_extract_date ON image_ppt_mapping(extract_date)"
+        ]
+        
+        for sql in index_sql:
+            self.cursor.execute(sql)
         
         self.db_conn.commit()
     
@@ -414,15 +426,23 @@ class ImageProcessor:
         return '.jpg'
 
     def get_all_images(self) -> list:
-        """获取数据库中的所有图片息"""
+        """获取数据库中的所有图片信息"""
         try:
-            # 使用 JOIN ��询取图片和PPT映射信息
+            # 使用单个查询获取所有需要的信息
             query = f"""
-                SELECT DISTINCT i.img_hash, i.img_path, i.img_name, i.extract_date, 
-                       i.img_type, i.width, i.height,
-                       m.pptx_path
+                WITH image_counts AS (
+                    SELECT img_hash, COUNT(*) as ref_count
+                    FROM image_ppt_mapping
+                    GROUP BY img_hash
+                )
+                SELECT DISTINCT 
+                    i.img_hash, i.img_path, i.img_name, i.extract_date, 
+                    i.img_type, i.width, i.height,
+                    m.pptx_path,
+                    COALESCE(ic.ref_count, 0) as ref_count
                 FROM {self.table_name} i
                 LEFT JOIN image_ppt_mapping m ON i.img_hash = m.img_hash
+                LEFT JOIN image_counts ic ON i.img_hash = ic.img_hash
                 ORDER BY i.extract_date DESC
             """
             self.cursor.execute(query)
@@ -430,7 +450,8 @@ class ImageProcessor:
             
             images = []
             for row in results:
-                img_hash, img_path, img_name, extract_date, img_type, width, height, ppt_path = row
+                (img_hash, img_path, img_name, extract_date, img_type, 
+                 width, height, ppt_path, ref_count) = row
                 if os.path.exists(img_path):  # 只返回仍然存在的图片
                     images.append({
                         'hash': img_hash,
@@ -441,7 +462,8 @@ class ImageProcessor:
                         'width': width,
                         'height': height,
                         'ppt_path': ppt_path,
-                        'ppt_name': Path(ppt_path).name if ppt_path else None
+                        'ppt_name': Path(ppt_path).name if ppt_path else None,
+                        'ref_count': ref_count
                     })
             return images
         except Exception as e:
@@ -610,3 +632,72 @@ class ImageProcessor:
                     'extract_date': extract_date
                 })
         return mappings
+
+    def _create_thumbnail_with_badge(self, img_path: str, ref_count: int, size=(200, 200)) -> str:
+        """创建带角标的缩略图并缓存"""
+        try:
+            # 生成缓存文件名
+            cache_dir = Path(self._get_app_data_dir()) / "thumbnails"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 使用图片路径和引用次数生成缓存文件名
+            thumb_hash = hashlib.md5(f"{img_path}_{ref_count}".encode()).hexdigest()
+            cache_path = cache_dir / f"{thumb_hash}.png"
+            
+            # 如果缓存存在且新于原图，直接返回
+            if cache_path.exists() and cache_path.stat().st_mtime > Path(img_path).stat().st_mtime:
+                return str(cache_path)
+            
+            # 创建缩略图
+            img = Image.open(img_path)
+            # 计算等比例缩放尺寸
+            img.thumbnail(size, Image.Resampling.LANCZOS)
+            thumb = img.convert('RGBA')
+            
+            # 如果有引用计数，添加角标
+            if ref_count > 1:
+                # 创建一个新的透明图层用于绘制角标
+                badge = Image.new('RGBA', thumb.size, (0, 0, 0, 0))
+                draw = ImageDraw.Draw(badge)
+                
+                # 绘制圆形背景
+                badge_size = 24
+                x = thumb.size[0] - badge_size - 5
+                y = 5
+                draw.ellipse(
+                    [x, y, x + badge_size, y + badge_size],
+                    fill=(255, 87, 34, 255)  # 橙色
+                )
+                
+                # 添加文字
+                try:
+                    font = ImageFont.truetype("arial.ttf", 12)
+                except:
+                    # 如果找不到 arial.ttf，使用默认字体
+                    font = ImageFont.load_default()
+                    
+                text = str(ref_count)
+                text_bbox = draw.textbbox((0, 0), text, font=font)
+                text_width = text_bbox[2] - text_bbox[0]
+                text_height = text_bbox[3] - text_bbox[1]
+                text_x = x + (badge_size - text_width) // 2
+                text_y = y + (badge_size - text_height) // 2
+                draw.text((text_x, text_y), text, fill=(255, 255, 255, 255), font=font)
+                
+                # 合并图层
+                thumb = Image.alpha_composite(thumb, badge)
+            
+            # 保存缓存，移除 ICC 配置文件
+            thumb_rgb = thumb.convert('RGB')
+            thumb_rgb.save(
+                cache_path, 
+                "PNG",
+                optimize=True,
+                icc_profile=None,  # 移除 ICC 配置文件
+                pnginfo=None      # 不包含额外的 PNG 信息
+            )
+            return str(cache_path)
+            
+        except Exception as e:
+            print(f"创建缩略图失败: {str(e)}")
+            return img_path
