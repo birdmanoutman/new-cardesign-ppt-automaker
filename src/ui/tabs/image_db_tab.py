@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, 
     QFileDialog, QMessageBox, QProgressBar, QGroupBox, QGridLayout,
-    QSplitter, QListWidget, QWidget, QMenu, QTableWidget, QTableWidgetItem,
+    QSplitter, QListWidget, QListWidgetItem, QWidget, QMenu, QTableWidget, QTableWidgetItem,
     QHeaderView
 )
 from PyQt6.QtCore import Qt, QSize, QTimer
@@ -298,7 +298,7 @@ class ImageDBTab(BaseTab):
                 self._extract_and_index()
                 
             except Exception as e:
-                QMessageBox.critical(self, "��误", f"重建数据库时出错：{str(e)}")
+                QMessageBox.critical(self, "错误", f"重建数据库时出错：{str(e)}")
 
     def _filter_images(self):
         """根据搜索文本过滤图片"""
@@ -419,9 +419,19 @@ class ImageDBTab(BaseTab):
                 image_processor = self.ppt_processor.get_image_processor()
                 images = image_processor.get_all_images()
             
+            if not images:
+                # 如果没有图片，显示提示
+                empty_item = QListWidgetItem("暂无图片")
+                empty_item.setFlags(empty_item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                self.image_grid.addItem(empty_item)
+                return
+            
             # 显示图片
             for img_info in images:
                 try:
+                    if not os.path.exists(img_info['path']):
+                        continue
+                        
                     # 创建缩略图
                     pixmap = QPixmap(img_info['path'])
                     if not pixmap.isNull():
@@ -435,6 +445,19 @@ class ImageDBTab(BaseTab):
                         # 创建列表项
                         item = QListWidgetItem()
                         item.setIcon(QIcon(thumb))
+                        
+                        # 设置项目大小
+                        item.setSizeHint(QSize(220, 240))  # 为文本留出空间
+                        
+                        # 设置工具提示
+                        tooltip = (
+                            f"文件名: {img_info['name']}\n"
+                            f"来源PPT: {img_info['ppt_name']}\n"
+                            f"提取时间: {img_info['extract_date']}"
+                        )
+                        item.setToolTip(tooltip)
+                        
+                        # 设置显示文本
                         item.setText(f"{img_info['name']}\n来自: {img_info['ppt_name']}")
                         
                         # 存储图片信息
@@ -446,6 +469,9 @@ class ImageDBTab(BaseTab):
                 except Exception as e:
                     print(f"显示图片时出错: {str(e)}")
                     continue
+                
+            # 更新状态
+            self.db_status_label.setText(f"数据库状态: 显示 {self.image_grid.count()} 张图片")
                 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"加载图片库时出错：{str(e)}")
