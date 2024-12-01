@@ -57,15 +57,15 @@ class ImageProcessor:
         # 图片主表
         table_sql = f'''
             CREATE TABLE IF NOT EXISTS {self.table_name} (
-                img_hash TEXT PRIMARY KEY,  # 使用哈希作为主键
-                img_path TEXT,
-                img_name TEXT,
-                extract_date TEXT,
-                img_type TEXT,
-                format TEXT,
-                width INTEGER,
-                height INTEGER,
-                file_size INTEGER
+                img_hash TEXT PRIMARY KEY,  -- 使用哈希作为主键
+                img_path TEXT,              -- 图片保存路径
+                img_name TEXT,              -- 图片文件名
+                extract_date TEXT,          -- 提取时间
+                img_type TEXT,              -- 图片类型
+                format TEXT,                -- 图片格式
+                width INTEGER,              -- 图片宽度
+                height INTEGER,             -- 图片高度
+                file_size INTEGER           -- 文件大小
             )
         '''
         self.cursor.execute(table_sql)
@@ -73,14 +73,14 @@ class ImageProcessor:
         # 图片-PPT映射关系表
         mapping_sql = '''
             CREATE TABLE IF NOT EXISTS image_ppt_mapping (
-                img_hash TEXT,
-                pptx_path TEXT,
-                pptx_name TEXT,
-                slide_index INTEGER,
-                shape_index TEXT,
-                extract_date TEXT,
+                img_hash TEXT,              -- 图片哈希值
+                pptx_path TEXT,             -- PPT文件路径
+                slide_index INTEGER,        -- 幻灯片索引
+                shape_index TEXT,           -- 形状索引
+                extract_date TEXT,          -- 提取时间
                 PRIMARY KEY (img_hash, pptx_path, slide_index, shape_index),
                 FOREIGN KEY (img_hash) REFERENCES images(img_hash)
+                    ON DELETE CASCADE       -- 当图片被删除时，自动删除映射
             )
         '''
         self.cursor.execute(mapping_sql)
@@ -106,11 +106,11 @@ class ImageProcessor:
         self.db_conn.commit()
     
     def _calculate_image_hash(self, image_data: bytes) -> str:
-        """计算图片哈希值"""
+        """计算图片哈希"""
         return hashlib.md5(image_data).hexdigest()
     
     def _is_size_similar(self, img: Image.Image, presentation: Presentation) -> bool:
-        """检查图片尺寸是否接近PPT幻灯片尺寸"""
+        """检图片尺寸是否接近PPT幻灯片尺寸"""
         # 获取PPT幻灯片尺寸（英寸转像素，假设96 DPI）
         ppt_width = int(presentation.slide_width * 96 / 914400)  # EMU到英寸到像素
         ppt_height = int(presentation.slide_height * 96 / 914400)
@@ -189,65 +189,78 @@ class ImageProcessor:
         except:
             return 'normal'  # 如果无法判断，默认为普通图片
     
-    def extract_background_images(self, ppt_path: str, output_folder: str) -> list:
+    def extract_background_images(self, ppt_path: str, output_folder: str, progress_callback=None) -> list:
         """从PPT中提取所有图片并建立索引"""
         try:
-            # 开始事务
             self.db_conn.execute("BEGIN TRANSACTION")
-            
             ppt_path = Path(ppt_path)
             output_folder = Path(output_folder)
             output_folder.mkdir(parents=True, exist_ok=True)
             
-            # 使用列表收集所有要插入的数据
+            presentation = Presentation(ppt_path)
+            total_slides = len(presentation.slides)
             insert_data = []
             
-            # 打开PPT文件
-            presentation = Presentation(ppt_path)
-            
-            # 遍历幻灯片和形状
             for slide_idx, slide in enumerate(presentation.slides, 1):
+                if progress_callback:
+                    progress_callback(slide_idx, total_slides, 
+                        f"正在处理第 {slide_idx}/{total_slides} 页")
+                
                 for shape_idx, shape in enumerate(slide.shapes, 1):
                     try:
                         if not hasattr(shape, 'image'):
                             continue
                         
+                        # 获取图片数据和格式
                         img_data = shape.image.blob
+                        content_type = shape.image.content_type
+                        
+                        # 只处理JPG和PNG
+                        if content_type not in ['image/jpeg', 'image/png']:
+                            continue
+                        
                         img_hash = self._calculate_image_hash(img_data)
                         
                         # 检查是否重复
                         if self._is_duplicate(img_hash):
+                            self._add_ppt_mapping(img_hash, ppt_path, slide_idx, shape_idx)
                             continue
                         
-                        # 处理和保存图片
-                        img_info = self._process_and_save_image(
-                            img_data, 
-                            shape.image.content_type,
-                            ppt_path,
-                            output_folder,
-                            slide_idx,
-                            shape_idx
-                        )
+                        # 直接保存原始数据
+                        ext = '.jpg' if content_type == 'image/jpeg' else '.png'
+                        img_name = f"{img_hash[:8]}{ext}"
+                        img_path = output_folder / img_name
                         
-                        if img_info:
-                            insert_data.append(img_info)
-                            
+                        # 直接写入原始数据
+                        with open(img_path, 'wb') as f:
+                            f.write(img_data)
+                        
+                        # 记录图片信息
+                        image_info = {
+                            'hash': img_hash,
+                            'path': str(img_path),
+                            'name': img_name,
+                            'type': 'normal',
+                            'format': ext[1:].upper(),
+                            'file_size': len(img_data)
+                        }
+                        insert_data.append(image_info)
+                        
+                        # 添加PPT映射
+                        self._add_ppt_mapping(img_hash, ppt_path, slide_idx, shape_idx)
+                    
                     except Exception as e:
                         print(f"处理图片时出错 (slide {slide_idx}, shape {shape_idx}): {str(e)}")
                         continue
             
-            # 批量插入数据库
             if insert_data:
                 self._batch_insert_images(insert_data)
-                
-            # 提交事务
+            
             self.db_conn.commit()
             return insert_data
             
         except Exception as e:
-            # 发生错误时回滚
             self.db_conn.rollback()
-            print(f"提取图片时出错: {str(e)}")
             raise
 
     def _process_and_save_image(self, img_data, content_type, ppt_path, output_folder, 
@@ -265,10 +278,10 @@ class ImageProcessor:
             
             if existing:
                 # 如果图片已存在，只添加PPT映射关系
-                self._add_ppt_mapping(img_hash, ppt_path, ppt_path.name, slide_idx, shape_idx)
+                self._add_ppt_mapping(img_hash, ppt_path, slide_idx, shape_idx)
                 return None
             
-            # 处理新图片
+            # 处理新片
             ext = self._get_image_extension(content_type, img_data)
             img_name = f"{img_hash[:8]}{ext}"  # 使用哈希值作为文件名
             img_path = output_folder / img_name
@@ -313,19 +326,20 @@ class ImageProcessor:
             print(f"处理图片失败: {str(e)}")
             return None
 
-    def _add_ppt_mapping(self, img_hash: str, ppt_path: Path, ppt_name: str, 
-                        slide_idx: int, shape_idx: str):
+    def _add_ppt_mapping(self, img_hash: str, ppt_path: Path, slide_idx: int, shape_idx: str):
         """添加图片-PPT映射关系"""
-        self.cursor.execute(
-            """
-            INSERT OR REPLACE INTO image_ppt_mapping 
-            (img_hash, pptx_path, pptx_name, slide_index, shape_index, extract_date)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (img_hash, str(ppt_path), ppt_name, slide_idx, str(shape_idx),
-             datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-        )
-        self.db_conn.commit()
+        try:
+            self.cursor.execute(
+                """
+                INSERT OR REPLACE INTO image_ppt_mapping 
+                (img_hash, pptx_path, slide_index, shape_index, extract_date)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (img_hash, str(ppt_path), slide_idx, str(shape_idx),
+                 datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            )
+        except Exception as e:
+            print(f"添加PPT映射关系时出错: {str(e)}")
 
     def _batch_insert_images(self, image_info_list: list):
         """批量插入图片信息"""
@@ -334,19 +348,20 @@ class ImageProcessor:
         
         insert_sql = f"""
             INSERT OR REPLACE INTO {self.table_name} (
-                img_hash, img_path, img_name, pptx_path, pptx_name,
-                slide_index, shape_index, img_type, format,
-                width, height, file_size, extract_date, is_duplicate
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                img_hash, img_path, img_name, extract_date, img_type, format,
+                width, height, file_size
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         
         # 准备批量插入的数据
         values = [(
-            info['img_hash'], info['img_path'], info['img_name'],
-            info['pptx_path'], info['pptx_name'], info['slide_index'],
-            info['shape_index'], info['img_type'], info['format'],
-            info['width'], info['height'], info['file_size'],
-            info['extract_date']
+            info['hash'], info['path'], info['name'],
+            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            info.get('type', 'normal'),
+            info.get('format', 'UNKNOWN'),
+            info.get('width', 0),
+            info.get('height', 0),
+            info.get('file_size', 0)
         ) for info in image_info_list]
         
         # 执行批量插入
@@ -399,28 +414,34 @@ class ImageProcessor:
         return '.jpg'
 
     def get_all_images(self) -> list:
-        """获取数据库中的所有图片信息"""
-        if not self.cursor:
-            raise ValueError("数据库未初始化")
-        
+        """获取数据库中的所有图片息"""
         try:
-            self.cursor.execute(
-                f"SELECT img_hash, img_path, pptx_path, extract_date FROM {self.table_name} "
-                f"WHERE is_duplicate = 0 ORDER BY extract_date DESC"
-            )
+            # 使用 JOIN ��询取图片和PPT映射信息
+            query = f"""
+                SELECT DISTINCT i.img_hash, i.img_path, i.img_name, i.extract_date, 
+                       i.img_type, i.width, i.height,
+                       m.pptx_path
+                FROM {self.table_name} i
+                LEFT JOIN image_ppt_mapping m ON i.img_hash = m.img_hash
+                ORDER BY i.extract_date DESC
+            """
+            self.cursor.execute(query)
             results = self.cursor.fetchall()
             
             images = []
             for row in results:
-                img_hash, img_path, pptx_path, extract_date = row
-                if Path(img_path).exists():  # 只返回仍然存在的图片
+                img_hash, img_path, img_name, extract_date, img_type, width, height, ppt_path = row
+                if os.path.exists(img_path):  # 只返回仍然存在的图片
                     images.append({
                         'hash': img_hash,
                         'path': img_path,
-                        'ppt_path': pptx_path,
+                        'name': img_name,
                         'extract_date': extract_date,
-                        'name': Path(img_path).name,
-                        'ppt_name': Path(pptx_path).name
+                        'type': img_type,
+                        'width': width,
+                        'height': height,
+                        'ppt_path': ppt_path,
+                        'ppt_name': Path(ppt_path).name if ppt_path else None
                     })
             return images
         except Exception as e:
@@ -428,52 +449,49 @@ class ImageProcessor:
             return []
 
     def search_images(self, keyword: str = "", img_type: str = None) -> list:
-        """
-        搜索图片
-        keyword: 搜索关键词
-        img_type: 图片类型过滤（'background'|'icon'|'normal'|None）
-        """
-        if not self.cursor:
-            raise ValueError("数据库未初始化")
-        
+        """搜索图片"""
         try:
             query = f"""
-                SELECT img_hash, img_path, pptx_path, extract_date, img_type, width, height 
-                FROM {self.table_name} 
-                WHERE is_duplicate = 0
+                SELECT DISTINCT i.img_hash, i.img_path, i.img_name, i.extract_date, 
+                       i.img_type, i.width, i.height,
+                       m.pptx_path
+                FROM {self.table_name} i
+                LEFT JOIN image_ppt_mapping m ON i.img_hash = m.img_hash
+                WHERE 1=1
             """
             params = []
             
-            # 添加关键词搜索条件
             if keyword:
-                query += " AND (img_path LIKE ? OR pptx_path LIKE ?)"
-                params.extend([f"%{keyword}%", f"%{keyword}%"])
+                query += """ AND (
+                    i.img_name LIKE ? OR 
+                    i.img_path LIKE ? OR 
+                    m.pptx_path LIKE ?
+                )"""
+                params.extend([f"%{keyword}%"] * 3)
             
-            # 添加类型过滤条件
             if img_type:
-                query += " AND img_type = ?"
+                query += " AND i.img_type = ?"
                 params.append(img_type)
             
-            # 按提取时间降序排序
-            query += " ORDER BY extract_date DESC"
+            query += " ORDER BY i.extract_date DESC"
             
             self.cursor.execute(query, params)
             results = self.cursor.fetchall()
             
             images = []
             for row in results:
-                img_hash, img_path, pptx_path, extract_date, img_type, width, height = row
-                if Path(img_path).exists():  # 只返回仍然存在的图片
+                img_hash, img_path, img_name, extract_date, img_type, width, height, ppt_path = row
+                if os.path.exists(img_path):
                     images.append({
                         'hash': img_hash,
                         'path': img_path,
-                        'ppt_path': pptx_path,
+                        'name': img_name,
                         'extract_date': extract_date,
                         'type': img_type,
                         'width': width,
                         'height': height,
-                        'name': Path(img_path).name,
-                        'ppt_name': Path(pptx_path).name
+                        'ppt_path': ppt_path,
+                        'ppt_name': Path(ppt_path).name if ppt_path else None
                     })
             return images
         except Exception as e:
@@ -510,9 +528,6 @@ class ImageProcessor:
 
     def get_image_stats(self) -> dict:
         """获取图片库统计信息"""
-        if not self.cursor:
-            raise ValueError("数据库未初始化")
-        
         try:
             stats = {
                 'total': 0,
@@ -522,22 +537,20 @@ class ImageProcessor:
                 'ppt_count': 0
             }
             
-            # 获取总图片数和各类型图片数量
+            # 获取图片统计
             self.cursor.execute(f"""
                 SELECT img_type, COUNT(*) 
-                FROM {self.table_name} 
-                WHERE is_duplicate = 0 
+                FROM {self.table_name}
                 GROUP BY img_type
             """)
             for img_type, count in self.cursor.fetchall():
                 stats[img_type] = count
                 stats['total'] += count
             
-            # 获取PPT文件数量
-            self.cursor.execute(f"""
+            # 获取PPT数量
+            self.cursor.execute("""
                 SELECT COUNT(DISTINCT pptx_path) 
-                FROM {self.table_name} 
-                WHERE is_duplicate = 0
+                FROM image_ppt_mapping
             """)
             stats['ppt_count'] = self.cursor.fetchone()[0]
             
