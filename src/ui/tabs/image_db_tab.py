@@ -17,9 +17,41 @@ class ImageDBTab(BaseTab):
     def __init__(self, ppt_processor, parent=None):
         self.ppt_processor = ppt_processor
         super().__init__(parent)
-        # 初始化完成后显示图片
-        QTimer.singleShot(100, self._display_database_images)
+        
+        # 初始化完成后直接加载数据
+        QTimer.singleShot(100, self._load_database_state)
     
+    def _load_database_state(self):
+        """加载数据库状态"""
+        try:
+            image_processor = self.ppt_processor.get_image_processor()
+            
+            # 加载已有的PPT源文件夹
+            for source_path in image_processor.get_ppt_sources():
+                if os.path.exists(source_path):
+                    row = self.source_table.rowCount()
+                    self.source_table.insertRow(row)
+                    self.source_table.setItem(row, 0, QTableWidgetItem(source_path))
+                    self.source_table.setItem(row, 1, QTableWidgetItem("已添加"))
+            
+            # 加载图片库路径
+            lib_path = image_processor.get_setting('image_lib_path')
+            if lib_path:
+                self.image_lib_path.setText(lib_path)
+            
+            # 显示图片
+            self._display_database_images()
+            
+            # 更新数据库状态
+            stats = image_processor.get_image_stats()
+            if stats:
+                self.db_status_label.setText(
+                    f"数据库状态: {stats['total']} 张图片，来自 {stats['ppt_count']} 个PPT"
+                )
+            
+        except Exception as e:
+            print(f"加载数据库状态时出错: {str(e)}")
+
     def init_ui(self):
         """初始化PPT图片数据库标签页的UI"""
         # 创建水平分割器
@@ -143,17 +175,15 @@ class ImageDBTab(BaseTab):
         """添加PPT文件源文件夹"""
         folder_path = QFileDialog.getExistingDirectory(self, "选择PPT文件夹")
         if folder_path:
-            # 添加新行
+            # 添加到表格
             row = self.source_table.rowCount()
             self.source_table.insertRow(row)
+            self.source_table.setItem(row, 0, QTableWidgetItem(folder_path))
+            self.source_table.setItem(row, 1, QTableWidgetItem("未索引"))
             
-            # 设置路径
-            path_item = QTableWidgetItem(folder_path)
-            self.source_table.setItem(row, 0, path_item)
-            
-            # 设置状态为"未索引"
-            status_item = QTableWidgetItem("未索引")
-            self.source_table.setItem(row, 1, status_item)
+            # 保存到数据库
+            image_processor = self.ppt_processor.get_image_processor()
+            image_processor.add_ppt_source(folder_path)
 
     def _remove_ppt_source(self):
         """删除选中的PPT文件源"""
@@ -206,6 +236,9 @@ class ImageDBTab(BaseTab):
         folder_path = QFileDialog.getExistingDirectory(self, "选择图片库位置")
         if folder_path:
             self.image_lib_path.setText(folder_path)
+            # 保存设置
+            image_processor = self.ppt_processor.get_image_processor()
+            image_processor.save_setting('image_lib_path', folder_path)
 
     def _extract_and_index(self):
         """提取图片并建立索引"""
@@ -331,20 +364,37 @@ class ImageDBTab(BaseTab):
         """显示图片右键菜单"""
         menu = QMenu(self)
         
-        # 获取当前选中的图片项
         item = self.image_grid.itemAt(pos)
         if item:
-            # 添加菜单项
-            find_ppt_action = menu.addAction("查找原PPT文件")
-            find_ppt_action.triggered.connect(lambda: self._find_source_ppt(item))
-            
-            open_folder_action = menu.addAction("打开所在文件夹")
-            open_folder_action.triggered.connect(lambda: self._open_image_folder(item))
-            
-            copy_action = menu.addAction("复制图片")
-            copy_action.triggered.connect(lambda: self._copy_image(item))
-            
-            menu.exec(self.image_grid.mapToGlobal(pos))
+            image_info = item.data(Qt.ItemDataRole.UserRole)
+            if image_info and 'hash' in image_info:
+                # 获取所有使用该图片的PPT
+                image_processor = self.ppt_processor.get_image_processor()
+                mappings = image_processor.get_image_ppt_mappings(image_info['hash'])
+                
+                # 添加PPT查找菜单
+                if mappings:
+                    ppt_menu = menu.addMenu("查找使用此图片的PPT")
+                    for mapping in mappings:
+                        action = ppt_menu.addAction(
+                            f"{mapping['ppt_name']} (第{mapping['slide']}页)"
+                        )
+                        action.triggered.connect(
+                            lambda checked, p=mapping['ppt_path']: 
+                            self._open_ppt_file(p)
+                        )
+                
+                # 添加菜单项
+                find_ppt_action = menu.addAction("查找原PPT文件")
+                find_ppt_action.triggered.connect(lambda: self._find_source_ppt(item))
+                
+                open_folder_action = menu.addAction("打开所在文件夹")
+                open_folder_action.triggered.connect(lambda: self._open_image_folder(item))
+                
+                copy_action = menu.addAction("复制图片")
+                copy_action.triggered.connect(lambda: self._copy_image(item))
+                
+                menu.exec(self.image_grid.mapToGlobal(pos))
 
     def _find_source_ppt(self, item):
         """查找图片所在的PPT文件"""
@@ -475,3 +525,14 @@ class ImageDBTab(BaseTab):
                 
         except Exception as e:
             QMessageBox.critical(self, "错误", f"加载图片库时出错：{str(e)}")
+
+    def _open_ppt_file(self, ppt_path: str):
+        """打开PPT文件"""
+        if not os.path.exists(ppt_path):
+            QMessageBox.warning(self, "警告", "PPT文件已不存在")
+            return
+        
+        if os.name == 'nt':  # Windows
+            os.system(f'explorer /select,"{ppt_path}"')
+        else:  # macOS 和 Linux
+            os.system(f'open -R "{ppt_path}"')
