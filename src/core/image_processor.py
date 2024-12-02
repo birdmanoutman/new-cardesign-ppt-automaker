@@ -458,8 +458,12 @@ class ImageProcessor:
                 if conditions:
                     query += " WHERE " + " AND ".join(conditions)
             
-            # 添加排序和分页
-            query += " ORDER BY i.extract_date DESC LIMIT ? OFFSET ?"
+            # 修改排序逻辑：首先按引用次数降序，然后按提取时间降序
+            query += """ 
+                ORDER BY COALESCE(ic.ref_count, 0) DESC,  -- 首先按引用次数降序
+                i.extract_date DESC                       -- 其次按时间降序
+                LIMIT ? OFFSET ?
+            """
             params.extend([limit, offset])
             
             self.cursor.execute(query, params)
