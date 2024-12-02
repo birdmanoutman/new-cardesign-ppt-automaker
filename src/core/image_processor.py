@@ -675,54 +675,51 @@ class ImageProcessor:
                 return str(cache_path)
             
             # 创建缩略图
-            img = Image.open(img_path)
-            # 计算等比例缩放尺寸
-            img.thumbnail(size, Image.Resampling.LANCZOS)
-            thumb = img.convert('RGBA')
-            
-            # 如果有引用计数，添加角标
-            if ref_count > 1:
-                # 创建一个新的透明图层用于绘制角标
-                badge = Image.new('RGBA', thumb.size, (0, 0, 0, 0))
-                draw = ImageDraw.Draw(badge)
+            with Image.open(img_path) as img:
+                # 保持RGBA格式
+                if img.mode == 'RGBA':
+                    thumb = img.copy()
+                    thumb.thumbnail(size, Image.Resampling.LANCZOS)
+                else:
+                    thumb = img.convert('RGBA')
+                    thumb.thumbnail(size, Image.Resampling.LANCZOS)
                 
-                # 绘制圆形背景
-                badge_size = 24
-                x = thumb.size[0] - badge_size - 5
-                y = 5
-                draw.ellipse(
-                    [x, y, x + badge_size, y + badge_size],
-                    fill=(255, 87, 34, 255)  # 橙色
-                )
-                
-                # 添加文字
-                try:
-                    font = ImageFont.truetype("arial.ttf", 12)
-                except:
-                    # 如果找不到 arial.ttf，使用默认字体
-                    font = ImageFont.load_default()
+                # 如果有引用计数，添加角标
+                if ref_count > 1:
+                    # 创建一个新的透明图层用于绘制角标
+                    badge = Image.new('RGBA', thumb.size, (0, 0, 0, 0))
+                    draw = ImageDraw.Draw(badge)
                     
-                text = str(ref_count)
-                text_bbox = draw.textbbox((0, 0), text, font=font)
-                text_width = text_bbox[2] - text_bbox[0]
-                text_height = text_bbox[3] - text_bbox[1]
-                text_x = x + (badge_size - text_width) // 2
-                text_y = y + (badge_size - text_height) // 2
-                draw.text((text_x, text_y), text, fill=(255, 255, 255, 255), font=font)
+                    # 绘制圆形背景
+                    badge_size = 24
+                    x = thumb.size[0] - badge_size - 5
+                    y = 5
+                    draw.ellipse(
+                        [x, y, x + badge_size, y + badge_size],
+                        fill=(255, 87, 34, 255)  # 橙色
+                    )
+                    
+                    # 添加文字
+                    try:
+                        font = ImageFont.truetype("arial.ttf", 12)
+                    except:
+                        # 如果找不到 arial.ttf，使用默认字体
+                        font = ImageFont.load_default()
+                        
+                    text = str(ref_count)
+                    text_bbox = draw.textbbox((0, 0), text, font=font)
+                    text_width = text_bbox[2] - text_bbox[0]
+                    text_height = text_bbox[3] - text_bbox[1]
+                    text_x = x + (badge_size - text_width) // 2
+                    text_y = y + (badge_size - text_height) // 2
+                    draw.text((text_x, text_y), text, fill=(255, 255, 255, 255), font=font)
+                    
+                    # 合并图层
+                    thumb = Image.alpha_composite(thumb, badge)
                 
-                # 合并图层
-                thumb = Image.alpha_composite(thumb, badge)
-            
-            # 保存缓存，移除 ICC 配置文件
-            thumb_rgb = thumb.convert('RGB')
-            thumb_rgb.save(
-                cache_path, 
-                "PNG",
-                optimize=True,
-                icc_profile=None,  # 移除 ICC 配置文件
-                pnginfo=None      # 不包含额外的 PNG 信息
-            )
-            return str(cache_path)
+                # 保存缩略图，保持透明通道
+                thumb.save(cache_path, "PNG", optimize=True)
+                return str(cache_path)
             
         except Exception as e:
             print(f"创建缩略图失败: {str(e)}")
