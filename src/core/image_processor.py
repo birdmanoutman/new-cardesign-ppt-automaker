@@ -430,7 +430,7 @@ class ImageProcessor:
         try:
             query = f"""
                 WITH image_counts AS (
-                    SELECT img_hash, COUNT(*) as ref_count
+                    SELECT img_hash, COUNT(DISTINCT pptx_path) as ref_count
                     FROM image_ppt_mapping
                     GROUP BY img_hash
                 )

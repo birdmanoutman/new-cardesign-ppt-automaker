@@ -196,7 +196,7 @@ class ImageDBTab(BaseTab):
         self.image_search.setPlaceholderText("搜索图片...")
         self.image_search.textChanged.connect(self._filter_images)
         
-        view_mode_btn = QPushButton("切换视图")
+        view_mode_btn = QPushButton("切换图")
         view_mode_btn.clicked.connect(self._toggle_view_mode)
         
         toolbar.addWidget(self.image_search)
@@ -417,7 +417,7 @@ class ImageDBTab(BaseTab):
                 self._extract_and_index()
                 
             except Exception as e:
-                QMessageBox.critical(self, "��误", f"重建数据库时出错：{str(e)}")
+                QMessageBox.critical(self, "错误", f"重建数据库时出错：{str(e)}")
 
     def _filter_images(self):
         """根据搜索文本过滤图片"""
@@ -449,24 +449,51 @@ class ImageDBTab(BaseTab):
                 image_processor = self.ppt_processor.get_image_processor()
                 mappings = image_processor.get_image_ppt_mappings(image_info['hash'])
                 
+                # 按PPT文件分组映射信息
+                ppt_groups = {}
+                for mapping in mappings:
+                    ppt_path = mapping['ppt_path']
+                    if ppt_path not in ppt_groups:
+                        ppt_groups[ppt_path] = {
+                            'name': mapping['ppt_name'],
+                            'slides': []
+                        }
+                    ppt_groups[ppt_path]['slides'].append({
+                        'slide': mapping['slide'],
+                        'shape': mapping['shape']
+                    })
+                
                 # 添加PPT查找菜单
-                if mappings:
+                if ppt_groups:
                     ppt_menu = menu.addMenu("查找使用此图片的PPT")
-                    for mapping in mappings:
-                        action = ppt_menu.addAction(
-                            f"{mapping['ppt_name']} (第{mapping['slide']}页)"
+                    for ppt_path, info in ppt_groups.items():
+                        # 创建PPT子菜单
+                        ppt_submenu = ppt_menu.addMenu(info['name'])
+                        
+                        # 添加"打开PPT文件"操作
+                        open_action = ppt_submenu.addAction("打开PPT文件")
+                        open_action.triggered.connect(
+                            lambda checked, p=ppt_path: self._open_ppt_file(p)
                         )
-                        action.triggered.connect(
-                            lambda checked, p=mapping['ppt_path']: 
-                            self._open_ppt_file(p)
-                        )
+                        
+                        # 添加分隔线
+                        ppt_submenu.addSeparator()
+                        
+                        # 添加页面信息
+                        if info['slides']:
+                            # 按页码排序
+                            sorted_slides = sorted(info['slides'], key=lambda x: x['slide'])
+                            for slide_info in sorted_slides:
+                                slide_action = ppt_submenu.addAction(
+                                    f"第 {slide_info['slide']} 页"
+                                )
+                                # 这里可以添加跳转到具体页面的功能
                 
-                # 添加菜单项
-                find_ppt_action = menu.addAction("查找原PPT文件")
-                find_ppt_action.triggered.connect(lambda: self._find_source_ppt(item))
+                # 添加其他菜单项
+                menu.addSeparator()
                 
-                open_folder_action = menu.addAction("打开所在文件夹")
-                open_folder_action.triggered.connect(lambda: self._open_image_folder(item))
+                find_ppt_action = menu.addAction("打开所在文件夹")
+                find_ppt_action.triggered.connect(lambda: self._open_image_folder(item))
                 
                 copy_action = menu.addAction("复制图片")
                 copy_action.triggered.connect(lambda: self._copy_image(item))
@@ -628,13 +655,13 @@ class ImageDBTab(BaseTab):
             # 设置显示文本
             display_text = f"{img_info['name']}"
             if img_info.get('ref_count', 0) > 1:
-                display_text += f"\n[被 {img_info['ref_count']} 个PPT引用]"
+                display_text += f"\n[在 {img_info['ref_count']} 个PPT中使用]"
             item.setText(display_text)
             
             # 设置工具提示
             tooltip = (
                 f"文件名: {img_info['name']}\n"
-                f"引用次数: {img_info.get('ref_count', 0)} 次\n"
+                f"使用于 {img_info.get('ref_count', 0)} 个PPT中\n"
                 f"提取时间: {img_info['extract_date']}"
             )
             item.setToolTip(tooltip)
