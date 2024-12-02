@@ -6,7 +6,6 @@ from .tabs.file_tab import FileTab
 from .tabs.ppt_tab import PPTTab
 from .tabs.image_db_tab import ImageDBTab
 from ..core import file_manager, ppt_processor
-import re
 
 class MainWindow(QMainWindow):
     def __init__(self):

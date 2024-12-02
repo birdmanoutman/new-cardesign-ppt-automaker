@@ -8,8 +8,8 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 import hashlib
 from datetime import datetime
-import win32com.client
 from PIL import ImageDraw, ImageFont
+from functools import lru_cache
 
 class ImageProcessor:
     def __init__(self):
@@ -425,10 +425,9 @@ class ImageProcessor:
         # 如果无法确定格式，默认保存为JPEG
         return '.jpg'
 
-    def get_all_images(self) -> list:
-        """获取数据库中的所有图片信息"""
+    def get_all_images(self, offset=0, limit=100, filters=None) -> list:
+        """分页获取图片信息"""
         try:
-            # 使用单个查询获取所有需要的信息
             query = f"""
                 WITH image_counts AS (
                     SELECT img_hash, COUNT(*) as ref_count
@@ -443,9 +442,27 @@ class ImageProcessor:
                 FROM {self.table_name} i
                 LEFT JOIN image_ppt_mapping m ON i.img_hash = m.img_hash
                 LEFT JOIN image_counts ic ON i.img_hash = ic.img_hash
-                ORDER BY i.extract_date DESC
             """
-            self.cursor.execute(query)
+            
+            params = []
+            
+            # 添加过滤条件
+            if filters:
+                conditions = []
+                if 'keyword' in filters:
+                    conditions.append("(i.img_name LIKE ? OR m.pptx_path LIKE ?)")
+                    params.extend([f"%{filters['keyword']}%"] * 2)
+                if 'type' in filters:
+                    conditions.append("i.img_type = ?")
+                    params.append(filters['type'])
+                if conditions:
+                    query += " WHERE " + " AND ".join(conditions)
+            
+            # 添加排序和分页
+            query += " ORDER BY i.extract_date DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            
+            self.cursor.execute(query, params)
             results = self.cursor.fetchall()
             
             images = []
@@ -632,6 +649,11 @@ class ImageProcessor:
                     'extract_date': extract_date
                 })
         return mappings
+
+    @lru_cache(maxsize=1000)
+    def _get_cached_thumbnail(self, img_path: str, ref_count: int) -> str:
+        """获取缓存的缩略图路径"""
+        return self._create_thumbnail_with_badge(img_path, ref_count)
 
     def _create_thumbnail_with_badge(self, img_path: str, ref_count: int, size=(200, 200)) -> str:
         """创建带角标的缩略图并缓存"""

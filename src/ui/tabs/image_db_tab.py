@@ -4,14 +4,61 @@ from PyQt6.QtWidgets import (
     QSplitter, QListWidget, QListWidgetItem, QWidget, QMenu, QTableWidget, QTableWidgetItem,
     QHeaderView
 )
-from PyQt6.QtCore import Qt, QSize, QTimer, QRect, QPoint
+from PyQt6.QtCore import Qt, QSize, QTimer, QRect, QPoint, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap, QIcon, QImage, QPainter, QColor, QFont, QPen
 from PyQt6.QtWidgets import QApplication
 import os
-import threading
-import subprocess
 from pathlib import Path
 from .base_tab import BaseTab
+
+class ImageLoader(QThread):
+    """图片加载线程"""
+    image_loaded = pyqtSignal(dict, str)  # 发送图片信息和缩略图路径
+    batch_finished = pyqtSignal()
+    progress_updated = pyqtSignal(int, int)  # 当前进度, 总数
+
+    def __init__(self, image_processor, images, batch_size=50):
+        super().__init__()
+        self.image_processor = image_processor
+        self.images = images
+        self.batch_size = batch_size
+        self.is_running = True
+
+    def run(self):
+        total = len(self.images)
+        for i in range(0, total, self.batch_size):
+            if not self.is_running:
+                break
+                
+            batch = self.images[i:i + self.batch_size]
+            for img_info in batch:
+                if not self.is_running:
+                    break
+                    
+                try:
+                    if not os.path.exists(img_info['path']):
+                        continue
+                    
+                    # 获取或创建缩略图
+                    thumb_path = self.image_processor._create_thumbnail_with_badge(
+                        img_info['path'], 
+                        img_info.get('ref_count', 0)
+                    )
+                    
+                    self.image_loaded.emit(img_info, thumb_path)
+                    self.progress_updated.emit(i + 1, total)
+                    
+                except Exception as e:
+                    print(f"加载图片失败: {str(e)}")
+                    continue
+            
+            # 每批次完成后发送信号
+            self.batch_finished.emit()
+        
+        self.batch_finished.emit()
+
+    def stop(self):
+        self.is_running = False
 
 class ImageDBTab(BaseTab):
     def __init__(self, ppt_processor, parent=None):
@@ -20,7 +67,17 @@ class ImageDBTab(BaseTab):
         
         # 初始化完成后直接加载数据
         QTimer.singleShot(100, self._load_database_state)
-    
+        
+        self.image_loader = None
+        self.loaded_images = set()
+        
+        # 添加分页相关属性
+        self.current_page = 0
+        self.page_size = 50
+        self.is_loading = False
+        self.has_more = True
+        self.current_filters = None
+
     def _load_database_state(self):
         """加载数据库状态"""
         try:
@@ -170,6 +227,9 @@ class ImageDBTab(BaseTab):
         self.image_progress_bar = QProgressBar()
         self.image_progress_bar.setVisible(False)
         self.layout.addWidget(self.image_progress_bar)
+        
+        # 添加滚动加载支持
+        self.image_grid.verticalScrollBar().valueChanged.connect(self._check_scroll_position)
 
     def _add_ppt_source(self):
         """添加PPT文件源文件夹"""
@@ -357,24 +417,15 @@ class ImageDBTab(BaseTab):
                 self._extract_and_index()
                 
             except Exception as e:
-                QMessageBox.critical(self, "错误", f"重建数据库时出错：{str(e)}")
+                QMessageBox.critical(self, "��误", f"重建数据库时出错：{str(e)}")
 
     def _filter_images(self):
         """根据搜索文本过滤图片"""
         search_text = self.image_search.text().lower()
+        self.current_filters = {'keyword': search_text} if search_text else None
         
-        try:
-            # 获取图片处理器
-            image_processor = self.ppt_processor.get_image_processor()
-            
-            # 搜索图片
-            images = image_processor.search_images(search_text)
-            
-            # 显示搜索结果
-            self._display_database_images(images)
-            
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"搜索图片时出错：{str(e)}")
+        # 重新显示图片
+        self._display_database_images()
 
     def _toggle_view_mode(self):
         """切换图片显示模式（网格/列表）"""
@@ -436,7 +487,7 @@ class ImageDBTab(BaseTab):
             QMessageBox.warning(self, "警告", "原PPT文件已不存在")
             return
         
-        # 打开文件所在文件夹并选中文件
+        # 打开文件所在文件夹并选文件
         if os.name == 'nt':  # Windows
             os.system(f'explorer /select,"{ppt_path}"')
         else:  # macOS 和 Linux
@@ -487,119 +538,124 @@ class ImageDBTab(BaseTab):
     def _display_database_images(self, images=None):
         """显示数据库中的图片"""
         try:
+            # 停止现有的加载线程
+            if self.image_loader and self.image_loader.isRunning():
+                self.image_loader.stop()
+                self.image_loader.wait()
+            
             self.image_grid.clear()
+            self.loaded_images.clear()
             
-            if images is None:
-                image_processor = self.ppt_processor.get_image_processor()
-                images = image_processor.get_all_images()
+            # 重置分页状态
+            self.current_page = 0
+            self.has_more = True
+            self.is_loading = False
             
-            if not images:
-                empty_item = QListWidgetItem("暂无图片")
-                empty_item.setFlags(empty_item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
-                self.image_grid.addItem(empty_item)
-                return
+            # 显示进度条
+            self.image_progress_bar.setVisible(True)
+            self.image_progress_bar.setValue(0)
             
-            # 获取每张图片的映射数量
-            image_mappings = {}
-            for img in images:
-                if img['hash'] not in image_mappings:
-                    mappings = image_processor.get_image_ppt_mappings(img['hash'])
-                    image_mappings[img['hash']] = len(mappings)
+            # 开始加载第一页
+            self._load_more_images()
             
-            # 去重图片，只保留一个副本
-            unique_images = {}
-            for img_info in images:
-                if img_info['hash'] not in unique_images:
-                    unique_images[img_info['hash']] = img_info
-            
-            for img_info in unique_images.values():
-                try:
-                    if not os.path.exists(img_info['path']):
-                        continue
-                        
-                    pixmap = QPixmap(img_info['path'])
-                    if not pixmap.isNull():
-                        # 创建缩略图（保持宽高比）
-                        thumb = pixmap.scaled(
-                            200, 200,
-                            Qt.AspectRatioMode.KeepAspectRatio,
-                            Qt.TransformationMode.SmoothTransformation
-                        )
-                        
-                        # 获取引用次数
-                        ref_count = image_mappings.get(img_info['hash'], 0)
-                        
-                        if ref_count > 1:
-                            # 创建新的画布来绘制角标
-                            canvas = QPixmap(thumb.size())
-                            canvas.fill(Qt.GlobalColor.transparent)
-                            
-                            painter = QPainter(canvas)
-                            painter.drawPixmap(0, 0, thumb)
-                            
-                            # 绘制角标背景
-                            badge_size = 24
-                            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-                            painter.setPen(Qt.PenStyle.NoPen)
-                            painter.setBrush(QColor(255, 87, 34))  # 使用醒目的橙色
-                            painter.drawEllipse(
-                                canvas.width() - badge_size - 5,
-                                5,
-                                badge_size,
-                                badge_size
-                            )
-                            
-                            # 绘制引用次数
-                            painter.setPen(QColor(255, 255, 255))
-                            font = QFont()
-                            font.setBold(True)
-                            font.setPointSize(10)
-                            painter.setFont(font)
-                            painter.drawText(
-                                QRect(
-                                    canvas.width() - badge_size - 5,
-                                    5,
-                                    badge_size,
-                                    badge_size
-                                ),
-                                Qt.AlignmentFlag.AlignCenter,
-                                str(ref_count)
-                            )
-                            painter.end()
-                            
-                            # 使用带角标的图片
-                            thumb = canvas
-                        
-                        item = QListWidgetItem()
-                        item.setIcon(QIcon(thumb))
-                        item.setSizeHint(QSize(220, 240))
-                        
-                        # 设置显示文本
-                        display_text = f"{img_info['name']}"
-                        if ref_count > 1:
-                            display_text += f"\n[被 {ref_count} 个PPT引用]"
-                        item.setText(display_text)
-                        
-                        # 设置工具提示
-                        tooltip = (
-                            f"文件名: {img_info['name']}\n"
-                            f"引用次数: {ref_count} 次\n"
-                            f"提取时间: {img_info['extract_date']}"
-                        )
-                        item.setToolTip(tooltip)
-                        
-                        item.setData(Qt.ItemDataRole.UserRole, img_info)
-                        self.image_grid.addItem(item)
-                        
-                except Exception as e:
-                    print(f"显示图片时出错: {str(e)}")
-                    continue
-            
-            # 更新状态
-            self.db_status_label.setText(f"数据库状态: 显示 {len(unique_images)} 张图片")
-                
         except Exception as e:
             QMessageBox.critical(self, "错误", f"加载图片库时出错：{str(e)}")
+            self.image_progress_bar.setVisible(False)
+
+    def _on_batch_finished(self):
+        """一批图片加载完成的处理"""
+        self.is_loading = False
+        self.image_grid.update()
+        
+        # 如果窗口还有空间，继续加载下一批
+        if (self.image_grid.count() < self.page_size and 
+            self.has_more and not self.is_loading):
+            QTimer.singleShot(100, self._load_more_images)
+
+    def _check_scroll_position(self):
+        """检查滚动位置，决定是否加载更多图片"""
+        scrollbar = self.image_grid.verticalScrollBar()
+        if (not self.is_loading and self.has_more and 
+            scrollbar.value() >= scrollbar.maximum() - 100):  # 接近底部时加载
+            self._load_more_images()
+
+    def _load_more_images(self):
+        """加载更多图片"""
+        if self.is_loading or not self.has_more:
+            return
+            
+        self.is_loading = True
+        
+        try:
+            image_processor = self.ppt_processor.get_image_processor()
+            images = image_processor.get_all_images(
+                offset=self.current_page * self.page_size,
+                limit=self.page_size,
+                filters=self.current_filters
+            )
+            
+            if not images:
+                self.has_more = False
+                self.is_loading = False
+                return
+            
+            # 创建并启动加载线程
+            self.image_loader = ImageLoader(
+                self.ppt_processor.get_image_processor(),
+                images
+            )
+            self.image_loader.image_loaded.connect(self._add_image_item)
+            self.image_loader.progress_updated.connect(self._update_progress)
+            self.image_loader.batch_finished.connect(self._on_batch_finished)
+            self.image_loader.start()
+            
+            self.current_page += 1
+            
+        except Exception as e:
+            print(f"加载更多图片时出错: {str(e)}")
+            self.is_loading = False
+
+    def _add_image_item(self, img_info: dict, thumb_path: str):
+        """添加单个图片项"""
+        if img_info['hash'] in self.loaded_images:
+            return
+            
+        try:
+            item = QListWidgetItem()
+            item.setIcon(QIcon(thumb_path))
+            item.setSizeHint(QSize(220, 240))
+            
+            # 设置显示文本
+            display_text = f"{img_info['name']}"
+            if img_info.get('ref_count', 0) > 1:
+                display_text += f"\n[被 {img_info['ref_count']} 个PPT引用]"
+            item.setText(display_text)
+            
+            # 设置工具提示
+            tooltip = (
+                f"文件名: {img_info['name']}\n"
+                f"引用次数: {img_info.get('ref_count', 0)} 次\n"
+                f"提取时间: {img_info['extract_date']}"
+            )
+            item.setToolTip(tooltip)
+            
+            item.setData(Qt.ItemDataRole.UserRole, img_info)
+            self.image_grid.addItem(item)
+            
+            self.loaded_images.add(img_info['hash'])
+            
+        except Exception as e:
+            print(f"添加图片项时出错: {str(e)}")
+
+    def _update_progress(self, current: int, total: int):
+        """更新进度条"""
+        self.image_progress_bar.setMaximum(total)
+        self.image_progress_bar.setValue(current)
+        
+        # 更新状态
+        self.db_status_label.setText(
+            f"数据库状态: 已加载 {len(self.loaded_images)} / {total} 张图片"
+        )
 
     def _open_ppt_file(self, ppt_path: str):
         """打开PPT文件"""
