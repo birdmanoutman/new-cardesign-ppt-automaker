@@ -485,8 +485,8 @@ class ImageProcessor:
         # 如果无法确定格式，默认保存为JPEG
         return '.jpg'
 
-    def get_all_images(self, offset=0, limit=100, filters=None) -> list:
-        """分页获取图片信息"""
+    def get_all_images(self, offset=0, limit=None, filters=None) -> list:
+        """获取所有图片信息"""
         try:
             query = f"""
                 WITH image_counts AS (
@@ -502,31 +502,16 @@ class ImageProcessor:
                 FROM {self.table_name} i
                 LEFT JOIN image_ppt_mapping m ON i.img_hash = m.img_hash
                 LEFT JOIN image_counts ic ON i.img_hash = ic.img_hash
+                ORDER BY COALESCE(ic.ref_count, 0) DESC, i.extract_date DESC
             """
             
-            params = []
+            # 只在指定了limit时添加分页
+            if limit is not None:
+                query += " LIMIT ? OFFSET ?"
+                self.cursor.execute(query, [limit, offset])
+            else:
+                self.cursor.execute(query)
             
-            # 添加过滤条
-            if filters:
-                conditions = []
-                if 'keyword' in filters:
-                    conditions.append("(i.img_name LIKE ? OR m.pptx_path LIKE ?)")
-                    params.extend([f"%{filters['keyword']}%"] * 2)
-                if 'type' in filters:
-                    conditions.append("i.img_type = ?")
-                    params.append(filters['type'])
-                if conditions:
-                    query += " WHERE " + " AND ".join(conditions)
-            
-            # 修改排序逻辑：首先按引用次数降序然后按提取时间降序
-            query += """ 
-                ORDER BY COALESCE(ic.ref_count, 0) DESC,  -- 首先按引用次数降序
-                i.extract_date DESC                       -- 其次按时间降序
-                LIMIT ? OFFSET ?
-            """
-            params.extend([limit, offset])
-            
-            self.cursor.execute(query, params)
             results = self.cursor.fetchall()
             
             images = []
@@ -546,9 +531,11 @@ class ImageProcessor:
                         'ppt_name': Path(ppt_path).name if ppt_path else None,
                         'ref_count': ref_count
                     })
+            
             return images
+            
         except Exception as e:
-            print(f"获取图片列表时出错: {str(e)}")
+            print(f"获取图片列表失败: {str(e)}")
             return []
 
     def search_images(self, keyword: str = "", img_type: str = None) -> list:
@@ -1239,7 +1226,7 @@ class ImageProcessor:
                           progress_callback=None) -> int:
         """
         批量处理所有图片的标签
-        ���回处理的图片数量
+        回处理的图片数量
         """
         try:
             # 获取所有图片
@@ -1291,3 +1278,65 @@ class ImageProcessor:
         except Exception as e:
             print(f"删除标签失败: {str(e)}")
             self.db_conn.rollback()
+
+    def batch_create_thumbnails(self, image_paths, ref_counts):
+        """批量创建缩略图"""
+        thumb_paths = []
+        for img_path, ref_count in zip(image_paths, ref_counts):
+            try:
+                thumb_path = self._create_thumbnail_with_badge(img_path, ref_count)
+                thumb_paths.append(thumb_path)
+            except Exception as e:
+                print(f"创建缩略图失败: {str(e)}")
+                thumb_paths.append(None)
+        return thumb_paths
+
+    def add_tag_category(self, name: str):
+        """添加标签分类"""
+        try:
+            self.cursor.execute(
+                "INSERT INTO tag_categories (name, created_at) VALUES (?, ?)",
+                (name, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            )
+            self.db_conn.commit()
+        except Exception as e:
+            print(f"添加标签分类失败: {str(e)}")
+            self.db_conn.rollback()
+
+    def update_tag_category(self, old_name: str, new_name: str):
+        """更新标签分类"""
+        try:
+            self.cursor.execute(
+                "UPDATE tags SET category = ? WHERE category = ?",
+                (new_name, old_name)
+            )
+            self.db_conn.commit()
+        except Exception as e:
+            print(f"更新标签分类失败: {str(e)}")
+            self.db_conn.rollback()
+
+    def delete_tag_category(self, name: str):
+        """删除标签分类"""
+        try:
+            # 将该分类下的标签移至"未分类"
+            self.cursor.execute(
+                "UPDATE tags SET category = NULL WHERE category = ?",
+                (name,)
+            )
+            self.db_conn.commit()
+        except Exception as e:
+            print(f"删除标签分类失败: {str(e)}")
+            self.db_conn.rollback()
+
+    def get_tag_id(self, tag_name: str) -> int:
+        """根据标签名获取标签ID"""
+        try:
+            self.cursor.execute(
+                "SELECT id FROM tags WHERE name = ?",
+                (tag_name,)
+            )
+            result = self.cursor.fetchone()
+            return result[0] if result else None
+        except Exception as e:
+            print(f"获取标签ID失败: {str(e)}")
+            return None

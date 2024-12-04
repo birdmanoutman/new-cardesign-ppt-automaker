@@ -1,14 +1,11 @@
 import sys
 from PyQt6.QtWidgets import QApplication
 from src.ui.main_window import MainWindow
-from src.utils.environment_check import main as check_env
+from src.utils.environment_check import main as check_environment
 
 def main():
-    # 首先运行环境检查
-    check_env()
-    
-    # 然后启动应用
     app = QApplication(sys.argv)
+    check_environment()  # 检查环境
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
