@@ -1,0 +1,9 @@
+@echo off
+echo Cleaning up previous builds...
+rmdir /s /q build dist
+echo Installing requirements...
+pip install -r requirements.txt
+echo Building application...
+python build.py
+echo Done!
+pause 
