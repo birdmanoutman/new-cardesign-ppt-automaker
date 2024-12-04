@@ -10,6 +10,27 @@ import hashlib
 from datetime import datetime
 from PIL import ImageDraw, ImageFont
 from functools import lru_cache
+from typing import List, Dict, Tuple
+import numpy as np
+
+# 延迟导入CLIP相关库
+CLIP_AVAILABLE = False
+try:
+    import torch
+    if not torch.cuda.is_available():
+        print("警告: 未检测到GPU，CLIP模型将在CPU上运行，可能会比较慢")
+    
+    from transformers import CLIPProcessor, CLIPModel
+    CLIP_AVAILABLE = True
+    print("成功加载CLIP模型相关库")
+except ImportError as e:
+    print(f"CLIP模型相关库导入失败: {str(e)}")
+    print("请确保已正确安装以下库:")
+    print("- torch")
+    print("- transformers")
+    print("可以尝试运行: pip install torch transformers --index-url https://pypi.tuna.tsinghua.edu.cn/simple")
+except Exception as e:
+    print(f"初始化CLIP相关功能时出错: {str(e)}")
 
 class ImageProcessor:
     def __init__(self):
@@ -27,6 +48,16 @@ class ImageProcessor:
         
         # 初始化数据库
         self.init_database()
+        
+        # CLIP模型相关
+        self.clip_model = None
+        self.clip_processor = None
+        self.clip_available = CLIP_AVAILABLE
+        
+        if self.clip_available:
+            print("CLIP功能已启用")
+        else:
+            print("CLIP功能未启用，标签识别将不可用")
     
     def _get_app_data_dir(self) -> Path:
         """获取应用程序数据目录"""
@@ -77,7 +108,7 @@ class ImageProcessor:
                 img_hash TEXT,              -- 图片哈希值
                 pptx_path TEXT,             -- PPT文件路径
                 slide_index INTEGER,        -- 幻灯片索引
-                shape_index TEXT,           -- 形状索引
+                shape_index TEXT,           -- 形状引
                 extract_date TEXT,          -- 提取时间
                 PRIMARY KEY (img_hash, pptx_path, slide_index, shape_index),
                 FOREIGN KEY (img_hash) REFERENCES images(img_hash)
@@ -103,6 +134,35 @@ class ImageProcessor:
             )
         '''
         self.cursor.execute(sources_sql)
+        
+        # 添加标签表
+        tags_sql = '''
+            CREATE TABLE IF NOT EXISTS tags (
+                id INTEGER PRIMARY KEY,
+                name TEXT UNIQUE,          -- 标签名称
+                category TEXT,             -- 标签类别
+                created_at TEXT            -- 创建时间
+            )
+        '''
+        self.cursor.execute(tags_sql)
+        
+        # 添加图片-标签关联表
+        image_tags_sql = '''
+            CREATE TABLE IF NOT EXISTS image_tags (
+                img_hash TEXT,             -- 图片哈希
+                tag_id INTEGER,            -- 标签ID
+                confidence REAL,           -- 置信度
+                created_at TEXT,           -- 创建时间
+                PRIMARY KEY (img_hash, tag_id),
+                FOREIGN KEY (img_hash) REFERENCES images(img_hash) ON DELETE CASCADE,
+                FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+            )
+        '''
+        self.cursor.execute(image_tags_sql)
+        
+        # 添加索引
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_image_tags_hash ON image_tags(img_hash)")
+        self.cursor.execute("CREATE INDEX IF NOT EXISTS idx_image_tags_tag ON image_tags(tag_id)")
         
         # 添加索引以提高查询性能
         index_sql = [
@@ -202,7 +262,7 @@ class ImageProcessor:
             return 'normal'  # 如果无法判断，默认为普通图片
     
     def extract_background_images(self, ppt_path: str, output_folder: str, progress_callback=None) -> list:
-        """从PPT中提取所有图片并建立索引"""
+        """从PPT中提取所图片建立索引"""
         try:
             self.db_conn.execute("BEGIN TRANSACTION")
             ppt_path = Path(ppt_path)
@@ -262,7 +322,7 @@ class ImageProcessor:
                         self._add_ppt_mapping(img_hash, ppt_path, slide_idx, shape_idx)
                     
                     except Exception as e:
-                        print(f"处理图片时出错 (slide {slide_idx}, shape {shape_idx}): {str(e)}")
+                        print(f"处理图时出错 (slide {slide_idx}, shape {shape_idx}): {str(e)}")
                         continue
             
             if insert_data:
@@ -383,7 +443,7 @@ class ImageProcessor:
     def _get_image_extension(self, content_type: str, img_data: bytes) -> str:
         """根据内容类型和文件头确定图片扩展名"""
         try:
-            # 尝试使用PIL打开图片来确定格式
+            # 尝试使用PIL打开图片确定格式
             img = Image.open(io.BytesIO(img_data))
             if img.format:
                 # 特殊处理 MPO 格式
@@ -446,7 +506,7 @@ class ImageProcessor:
             
             params = []
             
-            # 添加过滤条件
+            # 添加过滤条
             if filters:
                 conditions = []
                 if 'keyword' in filters:
@@ -458,7 +518,7 @@ class ImageProcessor:
                 if conditions:
                     query += " WHERE " + " AND ".join(conditions)
             
-            # 修改排序逻辑：首先按引用次数降序，然后按提取时间降序
+            # 修改排序逻辑：首先按引用次数降序然后按提取时间降序
             query += """ 
                 ORDER BY COALESCE(ic.ref_count, 0) DESC,  -- 首先按引用次数降序
                 i.extract_date DESC                       -- 其次按时间降序
@@ -686,7 +746,7 @@ class ImageProcessor:
                 
                 # 如果有引用计数，添加角标
                 if ref_count > 1:
-                    # 创建一个新的透明图层用于绘制角标
+                    # 创建一个新的透明图层用于绘角标
                     badge = Image.new('RGBA', thumb.size, (0, 0, 0, 0))
                     draw = ImageDraw.Draw(badge)
                     
@@ -724,3 +784,510 @@ class ImageProcessor:
         except Exception as e:
             print(f"创建缩略图失败: {str(e)}")
             return img_path
+    
+    def _init_clip_model(self):
+        """延迟载CLIP模型"""
+        if not self.clip_available:
+            raise RuntimeError("CLIP模型相关库未安装，无法使用标签识别功能")
+        
+        if self.clip_model is None:
+            try:
+                # 设置镜像站点
+                os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+                os.environ['HF_HOME'] = str(Path(self._get_app_data_dir()) / "huggingface")
+                os.environ['HF_MIRROR'] = 'https://hf-mirror.com'
+                
+                # 使用本地模型
+                model_name = "openai/clip-vit-base-patch32"
+                
+                # 创建缓存目录
+                cache_dir = Path(self._get_app_data_dir()) / "models" / "clip"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                
+                # 忽略警告
+                import warnings
+                warnings.filterwarnings("ignore", message=".*resume_download.*")
+                
+                # 加载模型和处理器
+                print("正在加载CLIP模型和处理器...")
+                from transformers import CLIPModel, CLIPProcessor
+                
+                # 尝试从本地加载
+                try:
+                    print(f"尝试从本地加载模型: {cache_dir}")
+                    self.clip_model = CLIPModel.from_pretrained(
+                        model_name,
+                        cache_dir=str(cache_dir),
+                        local_files_only=True,
+                        mirror='tuna'  # 使用清华镜像
+                    )
+                    self.clip_processor = CLIPProcessor.from_pretrained(
+                        model_name,
+                        cache_dir=str(cache_dir),
+                        local_files_only=True,
+                        mirror='tuna'
+                    )
+                    print("从本地加载模型成功")
+                except Exception as local_e:
+                    print(f"本地模型不存在: {str(local_e)}")
+                    print("尝试从网络下载...")
+                    
+                    # 如果地载失败，尝试从网络下载
+                    print("使用镜像下载模型...")
+                    self.clip_model = CLIPModel.from_pretrained(
+                        model_name,
+                        cache_dir=str(cache_dir),
+                        local_files_only=False,
+                        resume_download=True,
+                        mirror='tuna',
+                        proxies={'http': 'http://mirrors.aliyun.com/pypi/simple/'}
+                    )
+                    
+                    print("使用镜像下载处理器...")
+                    self.clip_processor = CLIPProcessor.from_pretrained(
+                        model_name,
+                        cache_dir=str(cache_dir),
+                        local_files_only=False,
+                        resume_download=True,
+                        mirror='tuna',
+                        proxies={'http': 'http://mirrors.aliyun.com/pypi/simple/'}
+                    )
+                    print("从网络下载模型成功")
+                
+                # 移动到GPU（如果可用）
+                if torch.cuda.is_available():
+                    self.clip_model = self.clip_model.to('cuda')
+                    print("模型已加载到GPU")
+                else:
+                    print("模型将在CPU上运行")
+                
+                # 设置为评估模式
+                self.clip_model.eval()
+                print("CLIP模型加载完成")
+                
+            except Exception as e:
+                print(f"加载CLIP模型失败: {str(e)}")
+                print("\n尝试使用以下方法解决:")
+                print("1. 检查网络连接")
+                print("2. 使用代理或VPN")
+                print("3. 手动载模型文件:", cache_dir)
+                print("4. 或者手动下载模型文件：")
+                print("   - 访问：https://huggingface.co/openai/clip-vit-base-patch32")
+                print("   - 下载所需文件并放到:", cache_dir)
+                print("\n需要下载的文件:")
+                print("- config.json")
+                print("- pytorch_model.bin")
+                print("- vocab.json")
+                print("- merges.txt")
+                self.clip_model = None
+                self.clip_processor = None
+                raise
+    
+    def add_tags(self, tags: List[Dict[str, str]]):
+        """添加标签到数库"""
+        try:
+            for tag in tags:
+                # 处理标签文本
+                name = tag['name'].strip().lower()  # 标准化标签名称
+                
+                # 移除特殊字符，只保留英文、数字和空格
+                import re
+                name = re.sub(r'[^a-zA-Z0-9\s-]', '', name)
+                
+                self.cursor.execute(
+                    "INSERT OR IGNORE INTO tags (name, category, created_at) VALUES (?, ?, ?)",
+                    (name, tag.get('category', 'uncategorized'), 
+                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                )
+            self.db_conn.commit()
+        except Exception as e:
+            print(f"添加标签失败: {str(e)}")
+            self.db_conn.rollback()
+    
+    def process_image_tags(self, img_hash: str, confidence_threshold: float = 0.5):
+        """处理单个图片的标签"""
+        try:
+            # 检查CLIP模型和处理器
+            if not self.clip_available:
+                print("CLIP功能未启用")
+                return
+            
+            if self.clip_model is None or self.clip_processor is None:
+                print("CLIP模型未初始化，尝试初始化...")
+                self._init_clip_model()
+                
+                if self.clip_model is None or self.clip_processor is None:
+                    print("CLIP模型初始化失败")
+                    return
+            
+            # 获取图片路径
+            self.cursor.execute(
+                f"SELECT img_path, img_name FROM {self.table_name} WHERE img_hash = ?",
+                (img_hash,)
+            )
+            result = self.cursor.fetchone()
+            if not result:
+                print(f"找不到图片记录: {img_hash}")
+                return
+            
+            img_path, img_name = result
+            if not os.path.exists(img_path):
+                print(f"图片文件不存在: {img_path}")
+                return
+            
+            print(f"\n处理图片: {img_name}")
+            
+            # 获取所有标签
+            self.cursor.execute("SELECT id, name FROM tags")
+            tags = self.cursor.fetchall()
+            if not tags:
+                print("没有可用的标签")
+                return
+            
+            # 准备图片和文本
+            print("加载图片...")
+            try:
+                image = Image.open(img_path)
+                
+                # 图像预处理
+                print("预处理图像...")
+                # 1. 确保图像是RGB模式
+                if image.mode not in ['RGB']:
+                    print(f"转换图片格式从 {image.mode} 到 RGB")
+                    image = image.convert('RGB')
+                
+                # 2. 调整图像大小到合适的尺寸
+                target_size = (224, 224)  # CLIP模型的标准输入尺寸
+                if image.size != target_size:
+                    print(f"调整图像尺寸从 {image.size} 到 {target_size}")
+                    image = image.resize(target_size, Image.Resampling.LANCZOS)
+                
+                # 3. 标准化图像亮度和对比度
+                from PIL import ImageEnhance
+                enhancer = ImageEnhance.Brightness(image)
+                image = enhancer.enhance(1.1)  # 略微提高亮度
+                
+                enhancer = ImageEnhance.Contrast(image)
+                image = enhancer.enhance(1.1)  # 略微提高对比度
+                
+                # 4. 添加图像增强
+                enhancer = ImageEnhance.Sharpness(image)
+                image = enhancer.enhance(1.2)  # 适度锐化
+                
+                print("图像预处理完成")
+                
+            except Exception as e:
+                print(f"加载或处理图片失败: {str(e)}")
+                return
+            
+            # 准备标签文本
+            tag_texts = [tag[1] for tag in tags]
+            print(f"处理 {len(tag_texts)} 个标签...")
+            
+            # 使用CLIP进行预测
+            print("进行标签识别...")
+            try:
+                # 对每个标签添加提示词以提高准确性
+                enhanced_texts = []
+                for text in tag_texts:
+                    prompts = [
+                        f"a photo of {text}",
+                        f"an image of {text}",
+                        f"a picture showing {text}",
+                        text
+                    ]
+                    enhanced_texts.extend(prompts)
+                
+                # 准备输入
+                inputs = self.clip_processor(
+                    images=image,
+                    text=enhanced_texts,
+                    return_tensors="pt",
+                    padding=True,
+                    max_length=77,
+                    truncation=True
+                )
+                
+                # 移动到GPU
+                if torch.cuda.is_available():
+                    inputs = {k: v.to('cuda') for k, v in inputs.items()}
+                    print("已将数据移动到GPU")
+                else:
+                    print("在CPU上运行推理")
+                
+                # 获取预测结果
+                with torch.no_grad():
+                    outputs = self.clip_model(**inputs)
+                    logits_per_image = outputs.logits_per_image
+                    
+                    # 1. 计算 cosine similarity
+                    logits_per_image = logits_per_image / logits_per_image.norm(dim=-1, keepdim=True)
+                    
+                    # 2. 使用更低的温度系数来增加区分度
+                    temperature = 0.07
+                    logits_per_image = logits_per_image / temperature
+                    
+                    # 3. 计算每个提示词的概率
+                    probs = torch.softmax(logits_per_image, dim=-1)  # 使用 softmax 而不是 sigmoid
+                    probs = probs.cpu().numpy()[0]
+                    
+                    # 4. 将多个提示词的结果合并回原始标签
+                    num_prompts = 4
+                    tag_probs = []
+                    for i in range(0, len(probs), num_prompts):
+                        prompt_probs = probs[i:i + num_prompts]
+                        # 使用最大值而不是平均值
+                        tag_prob = max(prompt_probs)
+                        tag_probs.append(tag_prob)
+                    
+                    # 5. 再次进行 softmax 归一化，增加区分度
+                    tag_probs = torch.softmax(torch.tensor(tag_probs) / temperature, dim=0).numpy()
+                    
+                    # 6. 调整阈值
+                    confidence_threshold = 0.1  # 降低阈值，因为概率和为1
+                    
+                    print("\n标签概率分布:")
+                    for (_, tag_name), prob in zip(tags, tag_probs):
+                        print(f"{tag_name}: {prob:.3f}")
+                
+                # 先删除旧的标签
+                print("\n删除旧标签...")
+                self.cursor.execute(
+                    "DELETE FROM image_tags WHERE img_hash = ?",
+                    (img_hash,)
+                )
+                
+                # 保存高于阈值的标签
+                matched_tags = []
+                for (tag_id, tag_name), prob in zip(tags, tag_probs):
+                    if prob >= confidence_threshold:  # 只要概率大于阈值就添加标签
+                        self.cursor.execute(
+                            "INSERT INTO image_tags "
+                            "(img_hash, tag_id, confidence, created_at) VALUES (?, ?, ?, ?)",
+                            (img_hash, tag_id, float(prob), 
+                             datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                        )
+                        matched_tags.append(f"{tag_name}({prob:.3f})")
+                
+                if matched_tags:
+                    print(f"\n匹配到的标签: {', '.join(matched_tags)}")
+                else:
+                    print("\n未匹配到任何标签")
+                
+                self.db_conn.commit()
+                print("标签数据已更新")
+                
+            except Exception as e:
+                print(f"CLIP推理失败: {str(e)}")
+                self.db_conn.rollback()
+            
+        except Exception as e:
+            print(f"处理图片标签失败: {str(e)}")
+            if hasattr(e, '__traceback__'):
+                import traceback
+                traceback.print_tb(e.__traceback__)
+    
+    def get_image_tags(self, img_hash: str) -> List[Dict]:
+        """获取图片的标签"""
+        try:
+            self.cursor.execute(
+                """
+                SELECT t.name, t.category, it.confidence
+                FROM image_tags it
+                JOIN tags t ON it.tag_id = t.id
+                WHERE it.img_hash = ?
+                ORDER BY it.confidence DESC
+                """,
+                (img_hash,)
+            )
+            
+            return [{
+                'name': name,
+                'category': category,
+                'confidence': confidence
+            } for name, category, confidence in self.cursor.fetchall()]
+            
+        except Exception as e:
+            print(f"获取图片标签失败: {str(e)}")
+            return []
+
+    def get_all_tags(self) -> List[Dict]:
+        """获取所有标签"""
+        try:
+            self.cursor.execute(
+                """
+                SELECT t.id, t.name, t.category, t.created_at,
+                       COUNT(it.img_hash) as usage_count
+                FROM tags t
+                LEFT JOIN image_tags it ON t.id = it.tag_id
+                GROUP BY t.id
+                ORDER BY t.category, t.name
+                """
+            )
+            
+            return [{
+                'id': tag_id,
+                'name': name,
+                'category': category,
+                'created_at': created_at,
+                'usage_count': usage_count
+            } for tag_id, name, category, created_at, usage_count in self.cursor.fetchall()]
+            
+        except Exception as e:
+            print(f"获取标签列表失败: {str(e)}")
+            return []
+
+    def get_tag_categories(self) -> List[str]:
+        """获取所有标签类别"""
+        try:
+            self.cursor.execute("SELECT DISTINCT category FROM tags ORDER BY category")
+            return [row[0] for row in self.cursor.fetchall()]
+        except Exception as e:
+            print(f"获取标签类别失败: {str(e)}")
+            return []
+
+    @lru_cache(maxsize=128)
+    def search_images_by_tags(self, tag_names: tuple, match_all: bool = True) -> List[Dict]:
+        """根据标签搜索图片（使用元组作为参数以支持缓存）"""
+        try:
+            if not tag_names:
+                return []
+            
+            # 将标签名转换为小写
+            tag_names = [name.lower() for name in tag_names]
+            
+            # 构建优化后的查询
+            query = f"""
+                WITH matched_tags AS (
+                    -- 找到所有匹配的标签ID
+                    SELECT id, name
+                    FROM tags
+                    WHERE LOWER(name) IN ({','.join(['?' for _ in tag_names])})
+                ),
+                tagged_images AS (
+                    -- 找到包含这些标签的图片
+                    SELECT 
+                        it.img_hash,
+                        COUNT(DISTINCT mt.name) as matched_tag_count,
+                        GROUP_CONCAT(mt.name || '(' || ROUND(it.confidence, 2) || ')') as matched_tags
+                    FROM image_tags it
+                    JOIN matched_tags mt ON it.tag_id = mt.id
+                    GROUP BY it.img_hash
+                    {f'HAVING matched_tag_count = {len(tag_names)}' if match_all else ''}
+                ),
+                image_counts AS (
+                    SELECT img_hash, COUNT(DISTINCT pptx_path) as ref_count
+                    FROM image_ppt_mapping
+                    GROUP BY img_hash
+                )
+                SELECT 
+                    i.img_hash, i.img_path, i.img_name, i.extract_date, 
+                    i.img_type, i.width, i.height,
+                    m.pptx_path,
+                    COALESCE(ic.ref_count, 0) as ref_count,
+                    ti.matched_tags,
+                    ti.matched_tag_count
+                FROM tagged_images ti
+                JOIN {self.table_name} i ON ti.img_hash = i.img_hash
+                LEFT JOIN image_ppt_mapping m ON i.img_hash = m.img_hash
+                LEFT JOIN image_counts ic ON i.img_hash = ic.img_hash
+                ORDER BY 
+                    ti.matched_tag_count DESC,
+                    ic.ref_count DESC
+            """
+            
+            print(f"执行标签搜索: {tag_names}")
+            print(f"SQL查询: {query}")
+            
+            self.cursor.execute(query, tag_names)
+            results = self.cursor.fetchall()
+            
+            images = []
+            for row in results:
+                (img_hash, img_path, img_name, extract_date, img_type, 
+                 width, height, ppt_path, ref_count, tags, matched_count) = row
+                
+                if os.path.exists(img_path):
+                    images.append({
+                        'hash': img_hash,
+                        'path': img_path,
+                        'name': img_name,
+                        'extract_date': extract_date,
+                        'type': img_type,
+                        'width': width,
+                        'height': height,
+                        'ppt_path': ppt_path,
+                        'ppt_name': Path(ppt_path).name if ppt_path else None,
+                        'ref_count': ref_count,
+                        'tags': tags.split(',') if tags else [],
+                        'matched_tag_count': matched_count
+                    })
+            
+            print(f"找到 {len(images)} 张匹配的图片")
+            return images
+            
+        except Exception as e:
+            print(f"按标签搜索图片失败: {str(e)}")
+            print("查询参数:", tag_names)
+            print("错误详情:", e.__class__.__name__)
+            if hasattr(e, '__traceback__'):
+                import traceback
+                traceback.print_tb(e.__traceback__)
+            return []
+
+    def batch_process_tags(self, confidence_threshold: float = 0.5, 
+                          progress_callback=None) -> int:
+        """
+        批量处理所有图片的标签
+        ���回处理的图片数量
+        """
+        try:
+            # 获取所有图片
+            self.cursor.execute(f"SELECT img_hash FROM {self.table_name}")
+            image_hashes = [row[0] for row in self.cursor.fetchall()]
+            
+            processed_count = 0
+            total = len(image_hashes)
+            
+            for i, img_hash in enumerate(image_hashes):
+                try:
+                    # 更新进度
+                    if progress_callback and callable(progress_callback):
+                        should_continue = progress_callback(i + 1, total)
+                        if should_continue is False:  # 允许取消处理
+                            break
+                    
+                    # 处理标签
+                    self.process_image_tags(img_hash, confidence_threshold)
+                    processed_count += 1
+                    
+                except Exception as e:
+                    print(f"处理图片 {img_hash} 标签失败: {str(e)}")
+                    continue
+            
+            return processed_count
+            
+        except Exception as e:
+            print(f"批量处理标签失败: {str(e)}")
+            return 0
+
+    def update_tag(self, tag_id: int, name: str, category: str = None):
+        """更新标签"""
+        try:
+            self.cursor.execute(
+                "UPDATE tags SET name = ?, category = ?, created_at = ? WHERE id = ?",
+                (name, category, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), tag_id)
+            )
+            self.db_conn.commit()
+        except Exception as e:
+            print(f"更新标签失败: {str(e)}")
+            self.db_conn.rollback()
+
+    def delete_tag(self, tag_id: int):
+        """删除标签"""
+        try:
+            self.cursor.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+            self.db_conn.commit()
+        except Exception as e:
+            print(f"删除标签失败: {str(e)}")
+            self.db_conn.rollback()

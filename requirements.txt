@@ -2,4 +2,7 @@ PyQt6
 python-pptx
 Pillow
 pywin32
-pyinstaller 
+pyinstaller
+transformers
+torch
+torchvision 
