@@ -70,18 +70,41 @@ def check_project_structure():
     
     required_dirs = [
         'src/core',
+        'src/core/database',
+        'src/core/images',
+        'src/core/ml',
+        'src/core/ppt',
+        'src/core/tags',
         'src/ui',
         'src/ui/tabs',
-        'src/ui/dialogs'
+        'src/ui/tabs/image_db',
+        'src/ui/dialogs',
+        'src/utils'
     ]
     
     required_files = [
-        'src/core/image_processor.py',
-        'src/core/ppt_processor.py',
+        # 核心模块文件
+        'src/core/__init__.py',
+        'src/core/controller.py',
+        'src/core/file_manager.py',
+        'src/core/database/db_manager.py',
+        'src/core/images/image_processor.py',
+        'src/core/ml/clip_manager.py',
+        'src/core/ppt/ppt_processor.py',
+        'src/core/ppt/ppt_extractor.py',
+        'src/core/tags/tag_manager.py',
+        # UI模块文件
         'src/ui/main_window.py',
-        'src/ui/tabs/image_db_tab.py',
+        'src/ui/tabs/base_tab.py',
+        'src/ui/tabs/image_db/tab.py',
+        'src/ui/tabs/image_db/ui.py',
+        'src/ui/tabs/image_db/loader.py',
+        'src/ui/tabs/image_db/handlers.py',
+        'src/ui/tabs/image_db/image_item.py',
         'src/ui/dialogs/tag_manager_dialog.py',
-        'requirements.txt'
+        # 其他配置文件
+        'requirements.txt',
+        'version.txt'
     ]
     
     print("检查目录结构:")

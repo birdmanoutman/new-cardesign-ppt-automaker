@@ -1,7 +1,11 @@
 from PyQt6.QtWidgets import QMainWindow, QTabWidget, QVBoxLayout, QWidget
 from PyQt6.QtCore import Qt
 from .tabs import FileTab, PPTTab, ImageDBTab
-from ..core import file_manager, ppt_processor
+from ..core.file_manager import FileManager
+from ..core.ppt.ppt_processor import PPTProcessor
+from ..core.database.db_manager import DatabaseManager
+from pathlib import Path
+import os
 
 class MainWindow(QMainWindow):
     """主窗口"""
@@ -18,9 +22,14 @@ class MainWindow(QMainWindow):
         self.main_layout = QVBoxLayout(self.central_widget)
         self.main_layout.setContentsMargins(5, 5, 5, 5)
         
+        # 初始化数据目录
+        self.app_data_dir = Path(os.path.expandvars(r"%APPDATA%\CarDesignTools"))
+        self.app_data_dir.mkdir(parents=True, exist_ok=True)
+        
         # 初始化核心组件
-        self.file_manager = file_manager.FileManager()
-        self.ppt_processor = ppt_processor.PPTProcessor()
+        self.db_manager = DatabaseManager(self.app_data_dir)
+        self.file_manager = FileManager()
+        self.ppt_processor = PPTProcessor(self.db_manager)
         
         # 初始化UI
         self.init_ui()
@@ -85,4 +94,6 @@ class MainWindow(QMainWindow):
             self.ppt_tab.close()
         if hasattr(self, 'image_tab'):
             self.image_tab.close()
+        if hasattr(self, 'db_manager'):
+            self.db_manager.close()
         event.accept()

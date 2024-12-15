@@ -1,239 +1,152 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
-    QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QMessageBox,
-    QInputDialog, QWidget, QGroupBox, QListWidget, QSplitter
+    QTreeWidget, QTreeWidgetItem, QHeaderView, QComboBox, QMessageBox,
+    QInputDialog, QWidget, QGroupBox, QSplitter, QTextEdit, QMenu, QTabWidget
 )
-from PyQt6.QtCore import Qt
-from typing import Dict, List
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QAction
+from typing import Dict, List, Optional
+from datetime import datetime
 
-class TagManagerDialog(QDialog):
-    def __init__(self, image_processor, parent=None):
+class TagTreeWidget(QTreeWidget):
+    """自定义标签树控件"""
+    tag_selected = pyqtSignal(dict)  # 发送选中的标签数据
+    
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.image_processor = image_processor
-        self.setWindowTitle("标签管理")
-        self.resize(600, 400)
+        self.setHeaderLabels(["标签名称", "层级", "使用次数"])
+        self.setColumnWidth(0, 200)
+        self.setColumnWidth(1, 60)
+        self.setColumnWidth(2, 80)
         
-        # 创建布局
+        # 启用拖放
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
+        
+        # 右键菜单
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+        
+    def _show_context_menu(self, position):
+        """显示右键菜单"""
+        item = self.itemAt(position)
+        if not item:
+            return
+            
+        menu = QMenu()
+        add_child = QAction("添加子标签", self)
+        edit_action = QAction("编辑标签", self)
+        delete_action = QAction("删除标签", self)
+        
+        menu.addAction(add_child)
+        menu.addAction(edit_action)
+        menu.addAction(delete_action)
+        
+        # 连接信号
+        add_child.triggered.connect(lambda: self.parent().add_child_tag(item))
+        edit_action.triggered.connect(lambda: self.parent().edit_tag(item))
+        delete_action.triggered.connect(lambda: self.parent().remove_tag(item))
+        
+        menu.exec(self.viewport().mapToGlobal(position))
+
+class TagCategoryTab(QWidget):
+    """标签分类标签页"""
+    def __init__(self, category_type: str, category_name: str, image_processor, dialog, parent=None):
+        super().__init__(parent)
+        self.category_type = category_type
+        self.category_name = category_name
+        self.image_processor = image_processor
+        self.tag_manager = image_processor.tag_manager
+        self.dialog = dialog  # 保存对话框引用
+        
+        # 默认提示词
+        self.default_prompts = {
+            'object': [
+                'This image contains {}',
+                'A photograph showing {}',
+                'The main subject is {}',
+                'We can see {} in this image'
+            ],
+            'scene': [
+                'This is a scene of {}',
+                'The environment appears to be {}',
+                'The location looks like {}',
+                'This picture was taken in {}'
+            ],
+            'style': [
+                'The style is {}',
+                'This has a {} appearance',
+                'The design aesthetic is {}',
+                'It features a {} style'
+            ],
+            'color': [
+                'The main color is {}',
+                'The dominant color appears to be {}',
+                'This image primarily features {} tones',
+                'The color scheme is mainly {}'
+            ]
+        }
+        
         layout = QVBoxLayout(self)
         
-        # 创建分割器
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        # 标签树
+        self.tag_tree = TagTreeWidget(self)
+        layout.addWidget(self.tag_tree)
         
-        # 左侧：分类管理
-        category_group = QGroupBox("分类管理")
-        category_layout = QVBoxLayout()
-        
-        # 分类列表
-        self.category_list = QListWidget()
-        self.category_list.itemSelectionChanged.connect(self._on_category_selected)
-        category_layout.addWidget(self.category_list)
-        
-        # 分类操作按钮
-        category_btn_layout = QHBoxLayout()
-        self.add_category_btn = QPushButton("添加分类")
-        self.edit_category_btn = QPushButton("编辑分类")
-        self.remove_category_btn = QPushButton("删除分类")
-        
-        self.add_category_btn.clicked.connect(self._add_category)
-        self.edit_category_btn.clicked.connect(self._edit_category)
-        self.remove_category_btn.clicked.connect(self._remove_category)
-        
-        category_btn_layout.addWidget(self.add_category_btn)
-        category_btn_layout.addWidget(self.edit_category_btn)
-        category_btn_layout.addWidget(self.remove_category_btn)
-        category_layout.addLayout(category_btn_layout)
-        
-        category_group.setLayout(category_layout)
-        
-        # 右侧：标签管理
-        tag_group = QGroupBox("标签管理")
-        tag_layout = QVBoxLayout()
-        
-        # 标签列表
-        self.tag_list = QTableWidget()
-        self.tag_list.setColumnCount(3)
-        self.tag_list.setHorizontalHeaderLabels(["标签名", "分类", "使用次数"])
-        self.tag_list.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tag_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.tag_list.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        tag_layout.addWidget(self.tag_list)
-        
-        # 标签操作按钮
+        # 操作按钮
         btn_layout = QHBoxLayout()
         self.add_btn = QPushButton("添加标签")
         self.edit_btn = QPushButton("编辑标签")
         self.remove_btn = QPushButton("删除标签")
         
-        self.add_btn.clicked.connect(self._add_tag)
-        self.edit_btn.clicked.connect(self._edit_tag)
-        self.remove_btn.clicked.connect(self._remove_tag)
+        self.add_btn.clicked.connect(self.add_tag)
+        self.edit_btn.clicked.connect(lambda: self.edit_tag())
+        self.remove_btn.clicked.connect(lambda: self.remove_tag())
         
         btn_layout.addWidget(self.add_btn)
         btn_layout.addWidget(self.edit_btn)
         btn_layout.addWidget(self.remove_btn)
-        tag_layout.addLayout(btn_layout)
-        
-        tag_group.setLayout(tag_layout)
-        
-        # 添加到分割器
-        splitter.addWidget(category_group)
-        splitter.addWidget(tag_group)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-        
-        layout.addWidget(splitter)
-        
-        # 加载数据
-        self._load_data()
-
-    def _load_data(self):
-        """加载数据"""
-        # 加载分类
-        categories = self.image_processor.get_tag_categories()
-        self.category_list.clear()
-        self.category_list.addItem("所有分类")
-        for category in categories:
-            self.category_list.addItem(category)
-        
-        # 加载标签
-        self._load_tags()
-
-    def _load_tags(self, category=None):
-        """加载标签"""
-        tags = self.image_processor.get_all_tags()
-        if category and category != "所有分类":
-            tags = [tag for tag in tags if tag['category'] == category]
-        
-        self.tag_list.setRowCount(len(tags))
-        for row, tag in enumerate(tags):
-            self.tag_list.setItem(row, 0, QTableWidgetItem(tag['name']))
-            self.tag_list.setItem(row, 1, QTableWidgetItem(tag['category'] or "未分类"))
-            self.tag_list.setItem(row, 2, QTableWidgetItem(str(tag['usage_count'])))
-
-    def _on_category_selected(self):
-        """分类选择改变时更新标签列表"""
-        items = self.category_list.selectedItems()
-        if items:
-            category = items[0].text()
-            self._load_tags(category)
-
-    def _add_category(self):
-        """添加分类"""
-        name, ok = QInputDialog.getText(self, "添加分类", "分类名称:")
-        if ok and name:
-            # 添加到数据库
-            self.image_processor.add_tag_category(name)
-            # 刷新列表
-            self._load_data()
-
-    def _edit_category(self):
-        """编辑分类"""
-        items = self.category_list.selectedItems()
-        if not items:
-            QMessageBox.warning(self, "警告", "请选择要编辑的分类")
-            return
-        
-        old_name = items[0].text()
-        if old_name == "所有分类":
-            QMessageBox.warning(self, "警告", "不能编辑默认分类")
-            return
-        
-        new_name, ok = QInputDialog.getText(self, "编辑分类", "分类名称:", text=old_name)
-        if ok and new_name:
-            # 更新数据库
-            self.image_processor.update_tag_category(old_name, new_name)
-            # 刷新列表
-            self._load_data()
-
-    def _remove_category(self):
-        """删除分类"""
-        items = self.category_list.selectedItems()
-        if not items:
-            QMessageBox.warning(self, "警告", "请选择要删除的分类")
-            return
-        
-        category = items[0].text()
-        if category == "所有分类":
-            QMessageBox.warning(self, "警告", "不能删除默认分类")
-            return
-        
-        reply = QMessageBox.question(
-            self, "确认删除",
-            f"确定要删除分类 '{category}' 吗？\n该分类下的标签将移至'未分类'",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            # 删除分类
-            self.image_processor.delete_tag_category(category)
-            # 刷新列表
-            self._load_data()
+        layout.addLayout(btn_layout)
     
-    def _add_tag(self):
-        """添加标签"""
+    def add_tag(self):
+        """添加顶级标签"""
         try:
-            # 获取当前选中的分类
-            category = None
-            items = self.category_list.selectedItems()
-            if items and items[0].text() != "所有分类":
-                category = items[0].text()
+            # 获取分类ID
+            categories = self.tag_manager.get_tag_categories()
+            category = next((cat for cat in categories if cat['type'] == self.category_type), None)
+            if not category:
+                raise ValueError(f"找不到分类: {self.category_type}")
             
-            # 显示添加标签对话框
-            name, ok = QInputDialog.getText(self, "添加标签", "标签名称:")
-            if ok and name:
-                # 添加标签
-                self.image_processor.add_tags([{
-                    'name': name,
-                    'category': category
-                }])
-                
-                # 刷新列表
-                self._load_tags(category)
-                
-        except Exception as e:
-            QMessageBox.critical(self, "错误", f"添加标签失败：{str(e)}")
-    
-    def _edit_tag(self):
-        """编辑标签"""
-        try:
-            # 获取选中的标签
-            items = self.tag_list.selectedItems()
-            if not items:
-                QMessageBox.warning(self, "警告", "请选择要编辑的标签")
-                return
+            category_id = category['id']
             
-            row = items[0].row()
-            old_name = self.tag_list.item(row, 0).text()
-            old_category = self.tag_list.item(row, 1).text()
-            if old_category == "未分类":
-                old_category = None
-            
-            # 显示编辑对话框
             dialog = QDialog(self)
-            dialog.setWindowTitle("编辑标签")
+            dialog.setWindowTitle(f"添加{self.category_name}标签")
             layout = QVBoxLayout(dialog)
             
-            # 标签名称输入
+            # 标签名称
             name_layout = QHBoxLayout()
             name_label = QLabel("标签名称:")
-            name_edit = QLineEdit(old_name)
+            name_edit = QLineEdit()
             name_layout.addWidget(name_label)
             name_layout.addWidget(name_edit)
             
-            # 分类选择
-            category_layout = QHBoxLayout()
-            category_label = QLabel("分类:")
-            category_combo = QComboBox()
-            category_combo.addItem("未分类")
-            categories = self.image_processor.get_tag_categories()
-            for cat in categories:
-                category_combo.addItem(cat)
-            if old_category:
-                index = category_combo.findText(old_category)
-                if index >= 0:
-                    category_combo.setCurrentIndex(index)
-            category_layout.addWidget(category_label)
-            category_layout.addWidget(category_combo)
+            # 提示词 - 使用默认提示词模板
+            prompt_layout = QVBoxLayout()
+            prompt_label = QLabel("提示词(每行一个):")
+            prompt_edit = QTextEdit()
+            default_prompts = self.default_prompts.get(self.category_type, [])
+            prompt_edit.setText('\n'.join(default_prompts))
+            prompt_layout.addWidget(prompt_label)
+            prompt_layout.addWidget(prompt_edit)
+            
+            # 置信度阈值
+            threshold_layout = QHBoxLayout()
+            threshold_label = QLabel("置信度阈值:")
+            threshold_edit = QLineEdit()
+            threshold_edit.setPlaceholderText("使用分类默认值")
+            threshold_layout.addWidget(threshold_label)
+            threshold_layout.addWidget(threshold_edit)
             
             # 按钮
             btn_layout = QHBoxLayout()
@@ -246,55 +159,252 @@ class TagManagerDialog(QDialog):
             
             # 添加到主布局
             layout.addLayout(name_layout)
-            layout.addLayout(category_layout)
+            layout.addLayout(prompt_layout)
+            layout.addLayout(threshold_layout)
             layout.addLayout(btn_layout)
             
             if dialog.exec() == QDialog.DialogCode.Accepted:
-                new_name = name_edit.text().strip()
-                new_category = category_combo.currentText()
-                if new_category == "未分类":
-                    new_category = None
-                
-                # 更新标签
-                tag_id = self.image_processor.get_tag_id(old_name)
-                if tag_id:
-                    self.image_processor.update_tag(tag_id, new_name, new_category)
+                try:
+                    # 添加标签
+                    self.tag_manager.add_tag(
+                        name=name_edit.text().strip(),
+                        category_id=category_id,
+                        prompt_words=prompt_edit.toPlainText().replace('\n', ';'),
+                        confidence_threshold=(
+                            float(threshold_edit.text()) 
+                            if threshold_edit.text().strip() 
+                            else None
+                        )
+                    )
                     # 刷新列表
-                    self._load_data()
+                    self.dialog.load_category_tags(self.category_type)
+                except Exception as e:
+                    QMessageBox.critical(self, "错误", f"添加标签失败：{str(e)}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"获取分类ID失败：{str(e)}")
+    
+    def add_child_tag(self, parent_item: QTreeWidgetItem):
+        """添加子标签"""
+        parent_tag = parent_item.data(0, Qt.ItemDataRole.UserRole)
+        if not parent_tag:
+            return
             
+        # 显示添加标签对话框
+        name, ok = QInputDialog.getText(
+            self, "添加子标签", 
+            f"请输入 {parent_tag['name']} 的子标签名称:"
+        )
+        
+        if ok and name:
+            try:
+                # 获取父标签的category_id
+                category_id = parent_tag['category_id']
+                
+                # 添加子标签
+                self.tag_manager.add_tag(
+                    name=name.strip(),
+                    category_id=category_id,  # 使用父标签的category_id
+                    parent_id=parent_tag['id']
+                )
+                # 刷新列表
+                self.dialog.load_category_tags(self.category_type)
+            except Exception as e:
+                QMessageBox.critical(self, "错误", f"添加子标签失败：{str(e)}")
+
+    def edit_tag(self, item: QTreeWidgetItem = None):
+        """编辑标签"""
+        try:
+            if not item:
+                item = self.tag_tree.currentItem()
+            if not item:
+                QMessageBox.warning(self, "警告", "请选择要编辑的标签")
+                return
+                
+            tag_data = item.data(0, Qt.ItemDataRole.UserRole)
+            if not tag_data:
+                return
+                
+            # 显示编辑对话框
+            dialog = QDialog(self)
+            dialog.setWindowTitle("编辑标签")
+            layout = QVBoxLayout(dialog)
+            
+            # 标签名称
+            name_layout = QHBoxLayout()
+            name_label = QLabel("标签名称:")
+            name_edit = QLineEdit(tag_data['name'])
+            name_layout.addWidget(name_label)
+            name_layout.addWidget(name_edit)
+            
+            # 提示词
+            prompt_layout = QVBoxLayout()
+            prompt_label = QLabel("提示词(每行一个):")
+            prompt_edit = QTextEdit()
+            if tag_data.get('prompt_words'):
+                prompt_edit.setText(tag_data['prompt_words'].replace(';', '\n'))
+            prompt_layout.addWidget(prompt_label)
+            prompt_layout.addWidget(prompt_edit)
+            
+            # 置信度阈值
+            threshold_layout = QHBoxLayout()
+            threshold_label = QLabel("置信度阈值:")
+            threshold_edit = QLineEdit(str(tag_data.get('confidence_threshold', '')))
+            threshold_edit.setPlaceholderText("使用分类默认值")
+            threshold_layout.addWidget(threshold_label)
+            threshold_layout.addWidget(threshold_edit)
+            
+            # 按钮
+            btn_layout = QHBoxLayout()
+            ok_btn = QPushButton("确定")
+            cancel_btn = QPushButton("取消")
+            ok_btn.clicked.connect(dialog.accept)
+            cancel_btn.clicked.connect(dialog.reject)
+            btn_layout.addWidget(ok_btn)
+            btn_layout.addWidget(cancel_btn)
+            
+            # 添加到主布局
+            layout.addLayout(name_layout)
+            layout.addLayout(prompt_layout)
+            layout.addLayout(threshold_layout)
+            layout.addLayout(btn_layout)
+            
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                try:
+                    # 更新标签
+                    self.tag_manager.update_tag(
+                        tag_data['id'],
+                        name=name_edit.text().strip(),
+                        prompt_words=prompt_edit.toPlainText().replace('\n', ';'),
+                        confidence_threshold=(
+                            float(threshold_edit.text()) 
+                            if threshold_edit.text().strip() 
+                            else None
+                        )
+                    )
+                    # 刷新列表
+                    self.dialog.load_category_tags(self.category_type)
+                except Exception as e:
+                    QMessageBox.critical(self, "错误", f"更新标签失败：{str(e)}")
         except Exception as e:
             QMessageBox.critical(self, "错误", f"编辑标签失败：{str(e)}")
     
-    def _remove_tag(self):
+    def remove_tag(self, item: QTreeWidgetItem = None):
         """删除标签"""
         try:
-            # 获取选中的标签
-            items = self.tag_list.selectedItems()
-            if not items:
+            if not item:
+                item = self.tag_tree.currentItem()
+            if not item:
                 QMessageBox.warning(self, "警告", "请选择要删除的标签")
                 return
-            
-            row = items[0].row()
-            tag_name = self.tag_list.item(row, 0).text()
-            usage_count = int(self.tag_list.item(row, 2).text())
-            
+                
+            tag_data = item.data(0, Qt.ItemDataRole.UserRole)
+            if not tag_data:
+                return
+                
             # 确认删除
-            message = f"确定要删除标签 '{tag_name}' 吗？"
-            if usage_count > 0:
-                message += f"\n该标签已被使用 {usage_count} 次"
-            
             reply = QMessageBox.question(
-                self, "确认删除", message,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                self,
+                "确认删除",
+                f"确定要删除标签 {tag_data['name']} 吗？\n注意：删除标签会同时删除其所有子标签！",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
             )
             
             if reply == QMessageBox.StandardButton.Yes:
-                # 获取标签ID并删除
-                tag_id = self.image_processor.get_tag_id(tag_name)
-                if tag_id:
-                    self.image_processor.delete_tag(tag_id)
+                try:
+                    # 删除标签
+                    self.tag_manager.delete_tag(tag_data['id'])
                     # 刷新列表
-                    self._load_data()
+                    self.dialog.load_category_tags(self.category_type)
+                except Exception as e:
+                    QMessageBox.critical(self, "错误", f"删除标签失败：{str(e)}")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"删除标签失败：{str(e)}")
+
+class TagManagerDialog(QDialog):
+    """标签管理对话框"""
+    def __init__(self, image_processor, parent=None):
+        super().__init__(parent)
+        self.image_processor = image_processor
+        self.tag_manager = image_processor.tag_manager
+        self.setWindowTitle("标签管理")
+        self.resize(800, 600)
+        
+        # 创建布局
+        layout = QVBoxLayout(self)
+        
+        # 创建标签页
+        self.tab_widget = QTabWidget()
+        layout.addWidget(self.tab_widget)
+        
+        # 添加标签页
+        self.category_tabs = {}
+        self.load_categories()
+        
+        # 添加按钮
+        btn_layout = QHBoxLayout()
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.accept)
+        btn_layout.addStretch()
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
+    
+    def load_categories(self):
+        """加载标签分类"""
+        try:
+            # 获取所有分类
+            categories = self.tag_manager.get_tag_categories()
+            
+            # 创建分类标签页
+            for category in categories:
+                tab = TagCategoryTab(
+                    category['type'],
+                    category['name'],
+                    self.image_processor,
+                    self
+                )
+                self.tab_widget.addTab(tab, category['name'])
+                self.category_tabs[category['type']] = tab
+            
+            # 加载每个分类的标签
+            for category_type in self.category_tabs:
+                self.load_category_tags(category_type)
+                
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"加载标签分类失败：{str(e)}")
+    
+    def load_category_tags(self, category_type: str):
+        """加载指定分类的标签"""
+        try:
+            if category_type not in self.category_tabs:
+                return
+                
+            tab = self.category_tabs[category_type]
+            tree = tab.tag_tree
+            tree.clear()
+            
+            # 获取该分类的标签树
+            tag_tree = self.tag_manager.get_tag_tree(category_type)
+            
+            # 递归添加标签
+            def add_tag_items(tags, parent=None):
+                for tag in tags:
+                    # 创建标签项
+                    item = QTreeWidgetItem(parent or tree)
+                    item.setText(0, tag['name'])
+                    item.setText(1, str(tag['level']))
+                    item.setText(2, str(tag.get('usage_count', 0)))
+                    item.setData(0, Qt.ItemDataRole.UserRole, tag)
+                    
+                    # 递归添加子标签
+                    if tag.get('children'):
+                        add_tag_items(tag['children'], item)
+            
+            # 添加所有标签
+            add_tag_items(tag_tree)
+            
+            # 展开所有项
+            tree.expandAll()
             
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"删除标签失败：{str(e)}") 
+            QMessageBox.critical(self, "错误", f"加载标签失败：{str(e)}") 
