@@ -1,0 +1,349 @@
+{
+  "project_structure": {
+    "src": {
+      "core": {
+        "description": "核心功能模块 - 采用分层架构",
+        "files": {
+          "__init__.py": {
+            "description": "核心模块初始化文件",
+            "exports": ["Controller"]
+          },
+          "controller.py": {
+            "description": "应用程序主控制器，采用依赖注入方式协调各层",
+            "main_classes": ["Controller"],
+            "dependencies": [
+              "ImageService",
+              "TagService",
+              "DatabaseManager",
+              "ImageProcessor",
+              "TagManager"
+            ]
+          }
+        },
+        "submodules": {
+          "interfaces": {
+            "description": "接口定义层",
+            "files": {
+              "processor.py": {
+                "description": "处理器接口定义",
+                "main_classes": ["IImageProcessor"],
+                "main_methods": [
+                  "process_image",
+                  "create_thumbnail"
+                ]
+              },
+              "storage.py": {
+                "description": "存储接口定义",
+                "main_classes": ["IStorageProvider"],
+                "main_methods": [
+                  "save_image",
+                  "get_image"
+                ]
+              },
+              "ai_service.py": {
+                "description": "AI服务接口定义",
+                "main_classes": ["IAIService"],
+                "main_methods": [
+                  "predict_tags"
+                ]
+              }
+            }
+          },
+          "exceptions": {
+            "description": "异常定义层",
+            "files": {
+              "base.py": {
+                "description": "基础异常类定义",
+                "main_classes": [
+                  "CoreException",
+                  "StorageError",
+                  "ProcessorError"
+                ]
+              }
+            }
+          },
+          "storage": {
+            "description": "存储层实现",
+            "files": {
+              "db_manager.py": {
+                "description": "数据库管理器",
+                "main_classes": ["DatabaseManager"],
+                "implements": ["IStorageProvider"],
+                "main_methods": [
+                  "save_image",
+                  "get_image",
+                  "init_database",
+                  "_init_tables",
+                  "execute",
+                  "commit",
+                  "close"
+                ]
+              }
+            }
+          },
+          "processors": {
+            "description": "处理器层实现",
+            "files": {
+              "image_processor.py": {
+                "description": "图片处理器",
+                "main_classes": ["ImageProcessor"],
+                "implements": ["IImageProcessor"],
+                "main_methods": [
+                  "process_image",
+                  "create_thumbnail",
+                  "get_image_info"
+                ],
+                "dependencies": [
+                  "IStorageProvider",
+                  "PIL",
+                  "hashlib"
+                ]
+              }
+            }
+          },
+          "services": {
+            "description": "业务服务层",
+            "files": {
+              "image_service.py": {
+                "description": "图片服务",
+                "main_classes": ["ImageService"],
+                "main_methods": [
+                  "handle_new_image",
+                  "get_image",
+                  "search_images"
+                ],
+                "dependencies": [
+                  "ImageProcessor",
+                  "DatabaseManager"
+                ]
+              },
+              "tag_service.py": {
+                "description": "标签服务",
+                "main_classes": ["TagService"],
+                "main_methods": [
+                  "get_image_tags"
+                ],
+                "dependencies": [
+                  "Settings",
+                  "aiohttp"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ai_services": {
+        "description": "AI服务模块 - 独立的Docker服务",
+        "submodules": {
+          "clip": {
+            "description": "CLIP模型服务",
+            "files": {
+              "Dockerfile": {
+                "description": "Docker构建文件",
+                "base_image": "python:3.8-slim",
+                "exposed_ports": [5000]
+              },
+              "requirements.txt": {
+                "description": "Python依赖清单",
+                "main_packages": [
+                  "torch>=2.0.0",
+                  "transformers>=4.30.0",
+                  "fastapi>=0.100.0",
+                  "uvicorn>=0.22.0"
+                ]
+              },
+              "model.py": {
+                "description": "CLIP模型封装",
+                "main_classes": ["ClipModel"],
+                "main_methods": ["predict"],
+                "dependencies": [
+                  "torch",
+                  "transformers",
+                  "PIL"
+                ]
+              },
+              "api.py": {
+                "description": "FastAPI服务实现",
+                "endpoints": [
+                  "/predict",
+                  "/health"
+                ],
+                "dependencies": [
+                  "fastapi",
+                  "ClipModel"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "description": "用户界面层",
+        "submodules": {
+          "tabs": {
+            "submodules": {
+              "image_db": {
+                "files": {
+                  "handlers.py": {
+                    "description": "图片数据库UI处理器",
+                    "main_classes": ["ImageDBHandler"],
+                    "main_methods": [
+                      "handle_image_upload",
+                      "handle_image_search"
+                    ],
+                    "dependencies": ["ImageService"]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "utils": {
+        "description": "工具类模块",
+        "files": {
+          "environment_check.py": {
+            "description": "环境检查工具",
+            "main_functions": [
+              "check_python_version",
+              "check_required_packages",
+              "check_system_requirements",
+              "check_ai_service_availability"
+            ],
+            "responsibilities": [
+              "检查Python版本兼容性",
+              "验证必要包的安装状态",
+              "检查系统环境要求",
+              "验证AI服务的可用性"
+            ],
+            "dependencies": [
+              "sys",
+              "pkg_resources",
+              "aiohttp",
+              "Settings"
+            ]
+          },
+          "config": {
+            "description": "配置管理模块",
+            "files": {
+              "settings.py": {
+                "description": "系统全局设置管理",
+                "main_classes": ["Settings"],
+                "config_items": [
+                  "APP_DATA_DIR",
+                  "IMAGE_CACHE_DIR",
+                  "MAX_IMAGE_SIZE",
+                  "THUMBNAIL_SIZE",
+                  "DATE_CONFIG",
+                  "FILE_CONFIG",
+                  "AI_SERVICE_CONFIG"
+                ],
+                "dependencies": [
+                  "pathlib",
+                  "os"
+                ]
+              },
+              "user_config.py": {
+                "description": "用户配置管理",
+                "main_classes": ["UserConfig"],
+                "main_methods": [
+                  "load_config",
+                  "save_config"
+                ],
+                "config_items": [
+                  "file_rules",
+                  "ppt_templates",
+                  "recent_files"
+                ],
+                "dependencies": [
+                  "json",
+                  "pathlib"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "architecture": {
+    "layers": [
+      {
+        "name": "interfaces",
+        "description": "接口定义层",
+        "responsibilities": ["定义核心接口和抽象类"]
+      },
+      {
+        "name": "storage",
+        "description": "存储层",
+        "responsibilities": ["数据持久化"]
+      },
+      {
+        "name": "processors",
+        "description": "处理器层",
+        "responsibilities": ["业务处理逻辑"]
+      },
+      {
+        "name": "services",
+        "description": "服务层",
+        "responsibilities": ["业务流程编排", "外部服务集成"]
+      },
+      {
+        "name": "ui",
+        "description": "界面层",
+        "responsibilities": ["用户交互"]
+      },
+      {
+        "name": "utils",
+        "description": "工具支持层",
+        "responsibilities": [
+          "提供通用工具功能",
+          "环境检查",
+          "项目配置管理"
+        ]
+      },
+      {
+        "name": "ai_services",
+        "description": "AI服务层",
+        "responsibilities": [
+          "提供独立的AI服务",
+          "模型推理",
+          "REST API"
+        ]
+      }
+    ],
+    "patterns": [
+      "依赖注��",
+      "接口隔离",
+      "分层架构",
+      "微服务架构"
+    ]
+  },
+  "project_info": {
+    "name": "汽车设计效率工具",
+    "version": "2.0.0",
+    "description": "采用分层架构重构的汽车设计工具，AI服务独立部署",
+    "architecture_style": "分层架构(Layered Architecture) + 微服务架构(AI服务)",
+    "dependencies": {
+      "python_version": "3.8+",
+      "main_packages": [
+        "PyQt6",
+        "python-pptx",
+        "Pillow",
+        "aiohttp",
+        "tqdm",
+        "pywin32"
+      ],
+      "ai_service_packages": {
+        "clip": [
+          "torch>=2.0.0",
+          "transformers>=4.30.0",
+          "fastapi>=0.100.0",
+          "uvicorn>=0.22.0"
+        ]
+      }
+    },
+    "development_status": "refactoring",
+    "last_updated": "2024-12-15"
+  }
+} 

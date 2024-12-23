@@ -1,8 +1,18 @@
-PyQt6
-python-pptx
-Pillow
-pywin32
-pyinstaller
-transformers
-torch
-torchvision 
+# 核心依赖
+PyQt6>=6.0.0
+python-pptx>=0.6.0
+Pillow>=9.5.0
+tqdm>=4.65.0
+pywin32>=300
+
+# 网络和异步支持
+aiohttp>=3.8.0
+aiofiles>=23.1.0
+
+# 工具和开发依赖
+typing-extensions>=4.5.0
+python-multipart>=0.0.6
+pydantic>=2.0.0
+
+# 日志和调试
+loguru>=0.7.0 

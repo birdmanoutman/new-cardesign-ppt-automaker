@@ -1,150 +1,122 @@
 import sys
-import os
+import pkg_resources
+import platform
+import logging
+import aiohttp
+import asyncio
 from pathlib import Path
+from typing import Dict, List, Tuple
+from .config.settings import Settings
 
-def check_python():
-    """检查Python环境"""
-    print("\n=== Python环境 ===")
-    print(f"Python版本: {sys.version}")
-    print(f"Python路径: {sys.executable}")
-    print(f"系统平台: {sys.platform}")
+logger = logging.getLogger(__name__)
 
-def check_dependencies():
-    """检查项目依赖"""
-    print("\n=== 核心依赖 ===")
+class EnvironmentChecker:
+    """环境检查工具"""
     
-    # 检查PyQt6
-    try:
-        from PyQt6.QtCore import QT_VERSION_STR
-        print(f"PyQt6版本: {QT_VERSION_STR}")
-    except ImportError as e:
-        print(f"PyQt6未安装: {e}")
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.required_packages = {
+            'PyQt6': '6.0.0',
+            'python-pptx': '0.6.0',
+            'Pillow': '9.5.0',
+            'aiohttp': '3.8.0',
+            'tqdm': '4.65.0',
+            'pywin32': '300'
+        }
     
-    # 检查python-pptx
-    try:
-        import pptx
-        print(f"python-pptx版本: {pptx.__version__}")
-    except ImportError as e:
-        print(f"python-pptx未安装: {e}")
+    def check_python_version(self) -> bool:
+        """检查Python版本是否满足要求"""
+        required_version = (3, 8)
+        current_version = sys.version_info[:2]
+        
+        if current_version < required_version:
+            logger.error(
+                f"Python版本不满足要求: 需要 {required_version[0]}.{required_version[1]} 或更高版本, "
+                f"当前版本 {current_version[0]}.{current_version[1]}"
+            )
+            return False
+        return True
     
-    # 检查Pillow
-    try:
-        from PIL import __version__ as pil_version
-        print(f"Pillow版本: {pil_version}")
-    except ImportError as e:
-        print(f"Pillow未安装: {e}")
+    def check_required_packages(self) -> Tuple[bool, List[str]]:
+        """检查必要包的安装情况"""
+        missing_packages = []
+        outdated_packages = []
+        
+        for package, min_version in self.required_packages.items():
+            try:
+                installed_version = pkg_resources.get_distribution(package).version
+                if pkg_resources.parse_version(installed_version) < pkg_resources.parse_version(min_version):
+                    outdated_packages.append(f"{package} (需要 {min_version}, 当前 {installed_version})")
+            except pkg_resources.DistributionNotFound:
+                missing_packages.append(package)
+        
+        if missing_packages or outdated_packages:
+            if missing_packages:
+                logger.error(f"缺少必要的包: {', '.join(missing_packages)}")
+            if outdated_packages:
+                logger.warning(f"包版本过低: {', '.join(outdated_packages)}")
+            return False, missing_packages + outdated_packages
+        return True, []
     
-    # 检查pywin32
-    try:
-        import win32com
-        print("pywin32已安装")
-    except ImportError as e:
-        print(f"pywin32未安装: {e}")
-
-def check_ml_environment():
-    """检查机器学习环境"""
-    print("\n=== 机器学习环境 ===")
+    def check_system_requirements(self) -> bool:
+        """检查系统环境要求"""
+        try:
+            # 检查操作系统
+            os_name = platform.system()
+            if os_name == 'Windows':
+                win_version = platform.win32_ver()[0]
+                if int(win_version.split('.')[0]) < 10:
+                    logger.error(f"Windows版本过低: 需要Windows 10或更高版本")
+                    return False
+            
+            # 检查存储空间
+            app_dir = Path(self.settings.APP_DATA_DIR).resolve()
+            if app_dir.exists():
+                free_space = self._get_free_space(app_dir)
+                if free_space < 1024 * 1024 * 1024:  # 1GB
+                    logger.warning(f"存储空间不足: 剩余 {free_space / (1024*1024):.2f} MB")
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"检查系统要求时出错: {str(e)}")
+            return False
     
-    # 检查PyTorch
-    try:
-        import torch
-        print(f"PyTorch版本: {torch.__version__}")
-        print(f"CUDA可用: {torch.cuda.is_available()}")
-        if torch.cuda.is_available():
-            print(f"CUDA版本: {torch.version.cuda}")
-            print(f"当前GPU: {torch.cuda.get_device_name(0)}")
-    except ImportError as e:
-        print(f"PyTorch未安装: {e}")
+    async def check_ai_service_availability(self) -> bool:
+        """检查AI服务是否可用"""
+        try:
+            clip_config = self.settings.AI_SERVICE_CONFIG['clip']
+            url = f"http://{clip_config['host']}:{clip_config['port']}/health"
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=5) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        if data.get('status') == 'healthy':
+                            return True
+                    logger.error(f"AI服务响应异常: {response.status}")
+                    return False
+                    
+        except aiohttp.ClientError as e:
+            logger.error(f"无法连接到AI服务: {str(e)}")
+            return False
+        except Exception as e:
+            logger.error(f"检查AI服务时出错: {str(e)}")
+            return False
     
-    # 检查Transformers
-    try:
-        import transformers
-        print(f"Transformers版本: {transformers.__version__}")
-    except ImportError as e:
-        print(f"Transformers未安装: {e}")
-
-def check_project_structure():
-    """检查项目结构"""
-    print("\n=== 项目结构 ===")
-    project_root = Path(__file__).parent.parent.parent
-    
-    required_dirs = [
-        'src/core',
-        'src/core/database',
-        'src/core/images',
-        'src/core/ml',
-        'src/core/ppt',
-        'src/core/tags',
-        'src/ui',
-        'src/ui/tabs',
-        'src/ui/tabs/image_db',
-        'src/ui/dialogs',
-        'src/utils'
-    ]
-    
-    required_files = [
-        # 核心模块文件
-        'src/core/__init__.py',
-        'src/core/controller.py',
-        'src/core/file_manager.py',
-        'src/core/database/db_manager.py',
-        'src/core/images/image_processor.py',
-        'src/core/ml/clip_manager.py',
-        'src/core/ppt/ppt_processor.py',
-        'src/core/ppt/ppt_extractor.py',
-        'src/core/tags/tag_manager.py',
-        # UI模块文件
-        'src/ui/main_window.py',
-        'src/ui/tabs/base_tab.py',
-        'src/ui/tabs/image_db/tab.py',
-        'src/ui/tabs/image_db/ui.py',
-        'src/ui/tabs/image_db/loader.py',
-        'src/ui/tabs/image_db/handlers.py',
-        'src/ui/tabs/image_db/image_item.py',
-        'src/ui/dialogs/tag_manager_dialog.py',
-        # 其他配置文件
-        'requirements.txt',
-        'version.txt'
-    ]
-    
-    print("检查目录结构:")
-    for dir_path in required_dirs:
-        path = project_root / dir_path
-        print(f"  {dir_path}: {'✓' if path.exists() else '✗'}")
-    
-    print("\n检查关键文件:")
-    for file_path in required_files:
-        path = project_root / file_path
-        print(f"  {file_path}: {'✓' if path.exists() else '✗'}")
-
-def check_data_directories():
-    """检查数据目录"""
-    print("\n=== 数据目录 ===")
-    if sys.platform == 'win32':
-        app_data = os.getenv('APPDATA')
-        data_dir = Path(app_data) / 'CarDesignTools'
-    else:
-        home = os.path.expanduser('~')
-        data_dir = Path(home) / '.cardesigntools'
-    
-    print(f"应用数据目录: {data_dir}")
-    print(f"目录存在: {'✓' if data_dir.exists() else '✗'}")
-    
-    if data_dir.exists():
-        db_file = data_dir / "image_gallery.db"
-        thumb_dir = data_dir / "thumbnails"
-        print(f"数据库文件: {'✓' if db_file.exists() else '✗'}")
-        print(f"缩略图目录: {'✓' if thumb_dir.exists() else '✗'}")
-
-def main():
-    """运行所有检查"""
-    print("=== 开始环境检查 ===")
-    check_python()
-    check_dependencies()
-    check_ml_environment()
-    check_project_structure()
-    check_data_directories()
-    print("\n=== 环境检查完成 ===")
-
-if __name__ == '__main__':
-    main() 
+    def _get_free_space(self, path: Path) -> int:
+        """获取指定路径的可用存储空间（字节）"""
+        if platform.system() == 'Windows':
+            import ctypes
+            free_bytes = ctypes.c_ulonglong(0)
+            ctypes.windll.kernel32.GetDiskFreeSpaceExW(
+                ctypes.c_wchar_p(str(path)), 
+                None, None, 
+                ctypes.pointer(free_bytes)
+            )
+            return free_bytes.value
+        else:
+            import os
+            st = os.statvfs(path)
+            return st.f_bavail * st.f_frsize 

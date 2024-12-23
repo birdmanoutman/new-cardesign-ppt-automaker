@@ -1,0 +1,250 @@
+{
+  "project_structure": {
+    "src": {
+      "core": {
+        "description": "核心功能模块",
+        "files": {
+          "__init__.py": {
+            "description": "核心模块初始化文件",
+            "exports": ["FileManager", "PPTProcessor", "ImageProcessor"]
+          },
+          "controller.py": {
+            "description": "应用程序主控制器，协调各个模块的工作",
+            "main_classes": ["Controller"],
+            "main_functions": [
+              "_init_default_data",
+              "get_ppt_sources",
+              "get_image_stats",
+              "extract_images_from_ppt"
+            ],
+            "dependencies": [
+              "DatabaseManager",
+              "TagManager",
+              "ImageProcessor",
+              "ClipManager",
+              "PPTExtractor",
+              "PPTProcessor"
+            ]
+          },
+          "file_manager.py": {
+            "description": "文件管理器，处理文件名标准化等功能",
+            "main_classes": ["FileManager"],
+            "main_functions": [
+              "standardize_filename",
+              "batch_rename",
+              "_extract_and_remove_date"
+            ]
+          }
+        },
+        "submodules": {
+          "database": {
+            "description": "数据库相关模块",
+            "files": {
+              "db_manager.py": {
+                "description": "数据库管理器，负责所有数据库操作",
+                "main_classes": ["DatabaseManager"]
+              }
+            }
+          },
+          "images": {
+            "description": "图片处理相关模块",
+            "files": {
+              "image_processor.py": {
+                "description": "图片处理器，负责图片处理、缩略图生成等功能",
+                "main_classes": ["ImageProcessor"],
+                "main_functions": [
+                  "process_image",
+                  "create_thumbnail",
+                  "search_images_by_tags",
+                  "get_total_images",
+                  "get_all_images",
+                  "get_setting",
+                  "set_setting"
+                ],
+                "dependencies": [
+                  "TagManager",
+                  "DatabaseManager",
+                  "PIL",
+                  "logging"
+                ]
+              }
+            }
+          },
+          "ml": {
+            "description": "机器学习相关模块",
+            "files": {
+              "clip_manager.py": {
+                "description": "CLIP模型管理器，负责图像识别相关功能",
+                "main_classes": ["ClipManager"],
+                "main_functions": ["predict", "batch_predict"]
+              }
+            }
+          },
+          "ppt": {
+            "description": "PPT处理相关模块",
+            "files": {
+              "ppt_extractor.py": {
+                "description": "PPT提取器，负责从PPT中提取图片到图库",
+                "main_classes": ["PPTExtractor"],
+                "main_functions": [
+                  "extract_images_from_folder",
+                  "_process_single_image",
+                  "get_ppt_sources",
+                  "get_total_ppts",
+                  "_add_image_to_db"
+                ],
+                "dependencies": [
+                  "DatabaseManager",
+                  "PIL",
+                  "tqdm",
+                  "logging",
+                  "hashlib"
+                ]
+              },
+              "ppt_processor.py": {
+                "description": "PPT处理器，专注于PPT编辑和格式调整功能",
+                "main_classes": ["PPTProcessor"],
+                "main_functions": [
+                  "adjust_text_boxes",
+                  "extract_text",
+                  "clean_unused_layouts"
+                ]
+              }
+            }
+          },
+          "tags": {
+            "description": "标签管理相关模块",
+            "files": {
+              "tag_manager.py": {
+                "description": "标签管理器，处理图片标签相关功能",
+                "main_classes": ["TagManager"],
+                "main_functions": [
+                  "add_tag",
+                  "get_tag_tree",
+                  "init_default_categories"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ui": {
+        "description": "用户界面模块",
+        "files": {
+          "main_window.py": {
+            "description": "主窗口实现",
+            "main_classes": ["MainWindow"],
+            "dependencies": ["FileTab", "PPTTab", "ImageDBTab"],
+            "main_functions": [
+              "init_ui",
+              "closeEvent"
+            ]
+          }
+        },
+        "submodules": {
+          "tabs": {
+            "description": "各个功能标签页",
+            "files": {
+              "base_tab.py": {
+                "description": "标签页基类",
+                "main_classes": ["BaseTab"],
+                "main_functions": ["init_ui"]
+              }
+            },
+            "submodules": {
+              "image_db": {
+                "description": "图片数据库标签页",
+                "files": {
+                  "handlers.py": {
+                    "description": "处理图像数据库相关的UI交互逻辑",
+                    "main_functions": [
+                      "handle_image_upload",
+                      "handle_image_search"
+                    ],
+                    "dependencies": [
+                      "ImageProcessor",
+                      "TagManager"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "dialogs": {
+            "description": "对话框组件",
+            "files": {
+              "tag_manager_dialog.py": {
+                "description": "标签管理对话框",
+                "main_classes": [
+                  "TagManagerDialog",
+                  "TagTreeWidget",
+                  "TagCategoryTab"
+                ],
+                "dependencies": [
+                  "ImageProcessor",
+                  "TagManager"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "utils": {
+        "description": "工具类模块",
+        "files": {
+          "environment_check.py": {
+            "description": "环境检查工具",
+            "main_functions": [
+              "check_python_version",
+              "check_required_packages",
+              "check_gpu_support"
+            ],
+            "dependencies": [
+              "sys",
+              "pkg_resources",
+              "torch"
+            ]
+          },
+          "project_context_manager.py": {
+            "description": "项目上下文管理器",
+            "main_classes": ["ProjectContextManager"],
+            "main_functions": [
+              "_load_context",
+              "save_context",
+              "update_file_info",
+              "get_file_info"
+            ],
+            "dependencies": [
+              "json",
+              "os",
+              "datetime"
+            ]
+          }
+        }
+      }
+    }
+  },
+  "project_info": {
+    "name": "汽车设计效率工具",
+    "description": "用于提高汽车设计工作效率的工具集",
+    "main_features": [
+      "文件名标准化",
+      "PPT快捷操作",
+      "PPT图片数据库"
+    ],
+    "dependencies": {
+      "python_version": "3.8+",
+      "main_packages": [
+        "PyQt6",
+        "python-pptx",
+        "Pillow",
+        "torch",
+        "transformers",
+        "tqdm",
+        "pywin32"
+      ]
+    },
+    "development_status": "active",
+    "last_updated": "2024-12-15"
+  }
+} 
