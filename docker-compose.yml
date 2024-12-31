@@ -1,0 +1,68 @@
+version: '3.8'
+
+services:
+  clip:
+    build:
+      context: ./clip_services
+      dockerfile: Dockerfile
+      args:
+        BUILDKIT_INLINE_CACHE: 1
+      cache_from:
+        - new-cardesign-ppt-automaker-clip:latest
+    image: new-cardesign-ppt-automaker-clip:latest
+    ports:
+      - "5000:5000"
+    deploy:
+      resources:
+        limits:
+          memory: 16g
+        reservations:
+          memory: 8g
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ./clip_services:/app
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+      - DOCKER_BUILDKIT=1
+    shm_size: '8gb'
+
+  blip2:
+    build:
+      context: ./blip2_services
+      dockerfile: Dockerfile
+      args:
+        BUILDKIT_INLINE_CACHE: 1
+      cache_from:
+        - new-cardesign-ppt-automaker-blip2:latest
+    image: new-cardesign-ppt-automaker-blip2:latest
+    ports:
+      - "5001:5001"
+    deploy:
+      resources:
+        limits:
+          memory: 16g
+        reservations:
+          memory: 8g
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ./blip2_services:/app
+      - huggingface_cache:/root/.cache/huggingface
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - TRANSFORMERS_CACHE=/root/.cache/huggingface
+      - DOCKER_BUILDKIT=1
+    shm_size: '8gb'
+
+volumes:
+  huggingface_cache:
+    name: clip-model-cache
